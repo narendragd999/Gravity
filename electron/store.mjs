@@ -7,6 +7,8 @@ import { ENV_MASK, normalizeBridgeProfile, normalizeBridgeEnv, validateBridgeUrl
 const defaults = () => ({
   version: 1, projects: [], conversations: [], bridgeProfiles: [],
   providers: [
+    { id: 'google-gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'], defaultModel: 'gemini-2.5-flash' },
+    { id: 'openai', name: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini'], defaultModel: 'gpt-4o-mini' },
     { id: 'gemini-local', name: 'Gemini Web2API', type: 'openai', baseUrl: 'http://127.0.0.1:8081/v1', models: ['gemini-3.6-flash'], defaultModel: 'gemini-3.6-flash' },
     { id: 'ollama', name: 'Ollama', type: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: [], defaultModel: '' }
   ],

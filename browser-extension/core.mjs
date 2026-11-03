@@ -29,8 +29,8 @@ export const SITES = Object.freeze([
     response: ['[data-message-author-role="assistant"]', '[data-role="assistant"]', '.assistant-message .markdown-prose', '.message-assistant .prose'], user: ['[data-message-author-role="user"]', '[data-role="user"]', '.user-message'],
     complete: ['button[aria-label="Copy"]', 'button[aria-label="Copy response"]', 'button[title="Copy"]'], enter: true },
   { id: 'gemini', name: 'Gemini', model: 'gemini-web', url: 'https://gemini.google.com/app', host: 'gemini.google.com',
-    composer: ['rich-textarea [contenteditable="true"]', '.ql-editor[contenteditable="true"]', '[contenteditable="true"][role="textbox"]'],
-    send: ['button[aria-label="Send message"]', 'button[aria-label="Send"]', 'button.send-button'],
+    composer: ['rich-textarea [contenteditable="true"]', 'rich-textarea p', '.ql-editor[contenteditable="true"]', 'div[contenteditable="true"][role="textbox"]', '[contenteditable="true"][role="textbox"]', 'textarea[placeholder*="Gemini"]', 'textarea[aria-label*="Gemini"]'],
+    send: ['button[aria-label="Send message"]', 'button[aria-label="Send"]', 'button.send-button', 'button[mattooltip="Send message"]', 'button[aria-label*="Send"]'],
     stop: ['button[aria-label="Stop response"]', 'button[aria-label="Stop generating"]', 'button[aria-label="Stop"]'],
     response: ['model-response .model-response-text', 'model-response .markdown', 'model-response', '[data-message-author="model"]'], user: ['user-query', '[data-message-author="user"]'],
     complete: ['button[aria-label="Copy response"]', 'button[aria-label="Copy"]', 'button[data-test-id="copy-button"]'], enter: true }

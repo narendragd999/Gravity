@@ -12,7 +12,7 @@ export async function pageBridge(action, adapter, payload = {}) {
     }
     return [];
   };
-  const single = selectors => { const matches = elements(selectors); return matches.length === 1 ? matches[0] : null; };
+  const single = selectors => { const matches = elements(selectors); return matches.length >= 1 ? matches[0] : null; };
   const available = element => element && visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true';
   const composer = () => {
     const result = single(adapter.composer);

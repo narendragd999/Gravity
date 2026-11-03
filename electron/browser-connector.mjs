@@ -245,7 +245,7 @@ export class BrowserConnector {
     this.sweep();
     const pairing = this.pending.get(id);
     if (!pairing || pairing.approved) throw new Error('This pairing request expired or was already handled.');
-    if (this.pair) throw new Error('Revoke the current Chrome extension pairing before approving another.');
+    if (this.pair) this.resetPairing();
     const token = randomBytes(32).toString('hex');
     pairing.approved = true;
     this.pair = { extensionId: pairing.extensionId, token, lastHeartbeat: Date.now() };
