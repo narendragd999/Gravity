@@ -1,0 +1,48 @@
+{
+  "name": "antigravity-studio",
+  "version": "1.4.3",
+  "private": true,
+  "description": "An independent desktop agent workspace with configurable model providers and a local API gateway.",
+  "author": "Antigravity Studio contributors",
+  "license": "MIT",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "test:desktop": "electron tests/electron-smoke.mjs",
+    "dist": "node scripts/package.mjs",
+    "pack": "electron-builder --dir",
+    "gateway": "node electron/standalone.mjs",
+    "web2api": "node electron/standalone.mjs"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "lucide-react": "^0.468.0",
+    "monaco-editor": "^0.52.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  },
+  "build": {
+    "appId": "dev.antigravity.studio",
+    "productName": "Antigravity Studio",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "electron/**/*", "browser-extension/**/*", "package.json", "build/icon.ico", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "!node_modules/**/*"],
+    "npmRebuild": false,
+    "win": { "target": "portable", "icon": "build/icon.ico", "signExecutable": false },
+    "artifactName": "Antigravity-Studio-${version}-${arch}.${ext}"
+  }
+}

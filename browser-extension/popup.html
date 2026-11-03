@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Browser Connector</title><link rel="stylesheet" href="popup.css"></head><body>
+<header><div class="mark">A</div><div><h1>Browser Connector</h1><p>Antigravity Studio</p></div><button id="refresh" class="icon" title="Refresh service status" aria-label="Refresh service status">↻</button></header>
+<section class="connection"><div><span id="dot" class="dot"></span><strong id="status">Loading…</strong></div><p id="detail">Connect to your local desktop app.</p><div class="actions"><button id="connect" class="primary">Connect to app</button><button id="disconnect" hidden>Disconnect</button></div></section>
+<div id="error" role="status" hidden></div><div class="section-label">YOUR SIGNED-IN SERVICES</div><main id="sites"></main>
+<p class="privacy">Uses fresh chat tabs in this Chrome profile. Your prompts go to the selected website; its response returns to your local app. Cookies, passwords, and session tokens are never exported. Website model selection stays under your control.</p>
+<footer><span>Local connector · 127.0.0.1:4319</span><a href="help.html" target="_blank" rel="noopener">Setup & privacy</a></footer><script type="module" src="popup.mjs"></script></body></html>

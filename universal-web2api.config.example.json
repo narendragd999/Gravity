@@ -1,0 +1,48 @@
+{
+  "port": 4318,
+  "gatewayTokenEnv": "GATEWAY_TOKEN",
+  "providers": [
+    {
+      "id": "gemini-web",
+      "name": "My existing Gemini web2api",
+      "type": "openai",
+      "baseUrl": "http://127.0.0.1:8081/v1",
+      "apiKeyEnv": "GEMINI_BRIDGE_API_KEY",
+      "models": ["REPLACE_WITH_A_MODEL_ID_FROM_YOUR_BRIDGE"],
+      "defaultModel": "REPLACE_WITH_A_MODEL_ID_FROM_YOUR_BRIDGE"
+    },
+    {
+      "id": "custom-local",
+      "name": "My custom local API adapter",
+      "type": "openai",
+      "baseUrl": "http://127.0.0.1:8082/v1",
+      "apiKeyEnv": "CUSTOM_ADAPTER_TOKEN",
+      "models": ["REPLACE_WITH_YOUR_ADAPTER_MODEL_ID"],
+      "defaultModel": "REPLACE_WITH_YOUR_ADAPTER_MODEL_ID"
+    }
+  ],
+  "bridges": [
+    {
+      "id": "gemini-existing",
+      "name": "Check existing Gemini web2api",
+      "providerId": "gemini-web",
+      "launchMode": "external",
+      "healthUrl": "http://127.0.0.1:8081/",
+      "startupTimeoutMs": 15000
+    },
+    {
+      "id": "custom-adapter-template",
+      "name": "Optional user-installed API adapter",
+      "providerId": "custom-local",
+      "enabled": false,
+      "launchMode": "managed",
+      "executable": "C:\\REPLACE_WITH_YOUR_RUNTIME\\node.exe",
+      "args": ["C:\\REPLACE_WITH_YOUR_ADAPTER\\server.mjs", "--host", "127.0.0.1", "--port", "8082"],
+      "cwd": ".",
+      "healthUrl": "http://127.0.0.1:8082/health",
+      "startupTimeoutMs": 30000,
+      "env": { "NODE_ENV": "production" },
+      "envFrom": { "ADAPTER_TOKEN": "CUSTOM_ADAPTER_TOKEN" }
+    }
+  ]
+}

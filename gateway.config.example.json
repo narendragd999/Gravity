@@ -1,0 +1,7 @@
+{
+  "port": 4318,
+  "providers": [
+    { "id": "gemini", "name": "Gemini Web2API", "type": "openai", "baseUrl": "http://127.0.0.1:8081/v1", "apiKeyEnv": "GEMINI_BRIDGE_API_KEY", "models": ["gemini-3.6-flash"], "defaultModel": "gemini-3.6-flash" },
+    { "id": "local", "name": "Local model", "type": "openai", "baseUrl": "http://127.0.0.1:11434/v1", "models": [], "defaultModel": "" }
+  ]
+}
