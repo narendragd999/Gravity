@@ -1,7 +1,7 @@
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export type PermissionMode = 'ask' | 'auto-edits' | 'full';
 export interface Approval { id: string; type: 'write' | 'command'; path?: string; content?: string; original?: string; command?: string; status: 'pending' | 'approved' | 'rejected'; autoApproved?: boolean; permissionMode?: PermissionMode }
-export interface Message { id: string; role: 'user' | 'assistant' | 'tool'; content: string; createdAt: string; toolName?: string; approval?: Approval; artifact?: { name: string; content: string } }
+export interface Message { id: string; role: 'user' | 'assistant' | 'tool'; content: string; images?: string[]; createdAt: string; toolName?: string; approval?: Approval; artifact?: { name: string; content: string } }
 export interface Conversation { id: string; title: string; projectId?: string; providerId?: string; model: string; mode: 'plan' | 'build'; permissionMode?: PermissionMode; messages: Message[]; status: 'idle' | 'running' | 'error'; createdAt: string; updatedAt: string; archived?: boolean }
 export interface Provider { id: string; name: string; type: 'openai' | 'anthropic' | 'gemini'; baseUrl: string; models: string[]; defaultModel: string; hasApiKey: boolean; headers?: Record<string, string>; managedBy?: 'browser-connector' }
 export interface BridgeProfile { id: string; name: string; providerId: string; launchMode: 'external' | 'managed'; executable: string; args: string[]; cwd: string; env: Record<string, string>; healthUrl?: string; startupTimeoutMs: number }

@@ -89,7 +89,7 @@ async function dispatch(method, args = {}) {
     case 'conversation:update': {
       const c = store.updateConversation(args); changed(); return c;
     }
-    case 'conversation:send': return runner.start(args.id, args.content);
+    case 'conversation:send': return runner.start(args.id, args.content, args.images);
     case 'conversation:stop': return runner.stop(args.id);
     case 'approval:resolve': if (typeof args.approved !== 'boolean') throw new Error('Approval must be true or false.'); return runner.resolve(args.id, args.approved);
     case 'provider:save': {

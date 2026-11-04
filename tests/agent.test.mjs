@@ -163,3 +163,25 @@ test('browser folder request becomes an approval and creates both folders only a
   assert.equal((await fs.stat(path.join(f.project, 'Two'))).isDirectory(), true);
   assert.equal(f.conversation.status, 'idle');
 });
+
+test('agent accepts image attachments and formats multimodal user content for provider', async t => {
+  const requests = [];
+  const f = await fixture(t, async (_, body) => {
+    requests.push(structuredClone(body));
+    return response('I received the image.');
+  });
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  f.runner.start(f.conversation.id, 'Analyze this screenshot', [dataUrl]);
+  await f.runner.runs.get(f.conversation.id).promise;
+  const conv = f.store.conversation(f.conversation.id);
+  const userMsg = conv.messages.find(m => m.role === 'user');
+  assert.equal(userMsg.content, 'Analyze this screenshot');
+  assert.deepEqual(userMsg.images, [dataUrl]);
+  assert.equal(requests.length, 1);
+  const providerUserMsg = requests[0].messages.find(m => m.role === 'user');
+  assert.ok(Array.isArray(providerUserMsg.content));
+  assert.equal(providerUserMsg.content[0].type, 'text');
+  assert.equal(providerUserMsg.content[0].text, 'Analyze this screenshot');
+  assert.equal(providerUserMsg.content[1].type, 'image_url');
+  assert.equal(providerUserMsg.content[1].image_url.url, dataUrl);
+});
