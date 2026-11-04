@@ -31,14 +31,26 @@ test('whole response can carry commentary and object arguments without losing th
   assert.deepEqual(parseSiteResult(JSON.stringify({ content: 'The PDFs were merged.', tool_calls: [] }), tools), { role: 'assistant', content: 'The PDFs were merged.' });
 });
 
-test('narrative, code labels, and quoted examples cannot authorize embedded tool calls', () => {
+test('narrative and quoted examples cannot authorize embedded tool calls', () => {
   for (const response of [
     `I will inspect the folder.\n\n${envelope}`,
-    `json\n\`\`\`\n${envelope}\n\`\`\``,
     `Here is an example only:\n\`\`\`json\n${envelope}\n\`\`\``,
     `\`\`\`json\n${envelope}\n\`\`\`\nNext I will merge the files.`,
     `\`\`\`json\n${envelope}\n\`\`\`\n\`\`\`json\n${envelope}\n\`\`\``
   ]) assert.throws(() => parseSiteResult(response, tools), /tool-call JSON|malformed tool-call JSON/);
+});
+
+test('code block language prefix preserves tool calls', () => {
+  for (const response of [
+    `json\n\`\`\`\n${envelope}\n\`\`\``,
+    `json\n\`\`\`json\n${envelope}\n\`\`\``,
+    `json\n${envelope}`
+  ]) {
+    const parsed = parseSiteResult(response, tools);
+    assert.equal(parsed.tool_calls.length, 1);
+    assert.equal(parsed.tool_calls[0].function.name, 'list_files');
+    assert.equal(parsed.content, 'I will inspect the folder.');
+  }
 });
 
 test('raw JSON requirement does not remove tool choice or declaration checks', () => {

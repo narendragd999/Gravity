@@ -58,6 +58,10 @@ export async function pageBridge(action, adapter, payload = {}) {
       // and a timestamp. Neither belongs to the assistant's message body.
       if (element.hidden || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return '';
       if (['absolute', 'fixed'].includes(style.position) && parseFloat(style.width) <= 1 && parseFloat(style.height) <= 1 && (style.clip !== 'auto' || style.clipPath !== 'none' || style.overflow === 'hidden')) return '';
+      if (!element.querySelector('pre') && element.parentElement?.querySelector('pre')) {
+        const headerText = element.textContent.trim().toLowerCase();
+        if (/^[a-z0-9_#-]{1,20}$/i.test(headerText) || element.querySelector('button,[role="button"]')) return '';
+      }
       if (element.tagName === 'PRE') { const code = element.querySelector('code') || element; return '\n```\n' + code.textContent + '\n```\n'; }
       if (element.tagName === 'BR') return '\n';
       const text = [...element.childNodes].map(walk).join('');

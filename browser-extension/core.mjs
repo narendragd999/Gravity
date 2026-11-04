@@ -82,8 +82,11 @@ export function containsToolCallMarkup(text) {
 
 function responseEnvelopeBody(text) {
   const trimmed = text.trim();
-  const fence = /^```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(trimmed);
-  return fence ? fence[1].trim() : trimmed.startsWith('{') ? trimmed : '';
+  const fence = /^(?:[a-zA-Z0-9_-]+\s*\n+)?```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(trimmed);
+  if (fence) return fence[1].trim();
+  const bareLabel = /^[a-zA-Z0-9_-]+\s*\n+(\{[\s\S]*\})$/i.exec(trimmed);
+  if (bareLabel) return bareLabel[1].trim();
+  return trimmed.startsWith('{') ? trimmed : '';
 }
 
 function parseCanonicalEnvelope(body) {
@@ -186,20 +189,6 @@ export function parseSiteResult(text, tools = [], toolChoice) {
   let canonical = parseCanonicalEnvelope(body);
   if (canonical?.duplicateKeys) throw new Error('The website returned duplicate top-level fields in its tool-call JSON. No tool call was accepted.');
   let recovered = recoverTextOnlyBody(body, canonical);
-  if (!recovered && !body) {
-    const textOnlyFence = /^[a-zA-Z0-9_-]+\s*\n+```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(text.trim())
-      || /^[a-zA-Z0-9_-]+\s*\n+(\{[\s\S]*\})$/i.exec(text.trim());
-    if (textOnlyFence) {
-      const candidateBody = textOnlyFence[1].trim();
-      const candidateCanonical = parseCanonicalEnvelope(candidateBody);
-      const candidateRecovered = recoverTextOnlyBody(candidateBody, candidateCanonical);
-      if (candidateRecovered) {
-        body = candidateBody;
-        canonical = candidateCanonical;
-        recovered = candidateRecovered;
-      }
-    }
-  }
   if (recovered) {
     if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website returned no required tool call.');
     return recovered;
