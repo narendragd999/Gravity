@@ -84,6 +84,16 @@ test('complete greetings recover text from canonical or smart-quoted empty-tool 
     assert.deepEqual(recoverTextOnlyEnvelope(response), expected);
     assert.deepEqual(parseSiteResult(response, tools), expected);
   }
+  for (const response of [
+    'json\n' + JSON.stringify({ content: greeting }),
+    'json\n' + JSON.stringify({ content: greeting, tool_calls: [] }),
+    'json\n```\n' + JSON.stringify({ content: greeting }) + '\n```',
+    'json\n```\n' + JSON.stringify({ content: greeting, tool_calls: [] }) + '\n```',
+    JSON.stringify({ content: greeting }),
+    '```json\n' + JSON.stringify({ content: greeting }) + '\n```'
+  ]) {
+    assert.deepEqual(parseSiteResult(response, tools), expected);
+  }
 });
 
 test('smart text recovery preserves Unicode, interior quotes, and JSON string escapes', () => {

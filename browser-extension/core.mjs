@@ -127,17 +127,24 @@ function recoverTextOnlyBody(body, canonical) {
   if (canonical) {
     if (canonical.duplicateKeys) return null;
     const { payload } = canonical;
-    if (payload && typeof payload === 'object' && !Array.isArray(payload) && Object.keys(payload).length === 2 && typeof payload.content === 'string' && payload.content.trim() && Array.isArray(payload.tool_calls) && !payload.tool_calls.length) {
-      return { role: 'assistant', content: payload.content };
+    if (payload && typeof payload === 'object' && !Array.isArray(payload) && typeof payload.content === 'string' && payload.content.trim()) {
+      const keys = Object.keys(payload);
+      if (keys.length === 1 && keys[0] === 'content') {
+        return { role: 'assistant', content: payload.content };
+      }
+      if (keys.length === 2 && Array.isArray(payload.tool_calls) && !payload.tool_calls.length) {
+        return { role: 'assistant', content: payload.content };
+      }
     }
     return null;
   }
 
-  const contentFirst = /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*,\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*\}$/.exec(body);
-  const toolsFirst = contentFirst ? null : /^\{\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*,\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
-  const match = contentFirst || toolsFirst;
+  const contentOnly = /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
+  const contentFirst = contentOnly ? null : /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*,\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*\}$/.exec(body);
+  const toolsFirst = (contentOnly || contentFirst) ? null : /^\{\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*,\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
+  const match = contentOnly || contentFirst || toolsFirst;
   if (!match) return null;
-  const contentIndex = contentFirst ? 4 : 6;
+  const contentIndex = contentOnly ? 4 : contentFirst ? 4 : 6;
   if (!match.some((part, index) => index > 0 && index !== contentIndex && /[“”]/.test(part))) return null;
   const raw = match[contentIndex];
   const escapes = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
@@ -175,10 +182,24 @@ export function parseSiteResult(text, tools = [], toolChoice) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('The website returned no assistant text.');
   if (text.length > 200000) throw new Error('The website response exceeded the 200,000-character limit.');
   if (!tools.length || toolChoice === 'none') return { role: 'assistant', content: text };
-  const body = responseEnvelopeBody(text);
-  const canonical = parseCanonicalEnvelope(body);
+  let body = responseEnvelopeBody(text);
+  let canonical = parseCanonicalEnvelope(body);
   if (canonical?.duplicateKeys) throw new Error('The website returned duplicate top-level fields in its tool-call JSON. No tool call was accepted.');
-  const recovered = recoverTextOnlyBody(body, canonical);
+  let recovered = recoverTextOnlyBody(body, canonical);
+  if (!recovered && !body) {
+    const textOnlyFence = /^[a-zA-Z0-9_-]+\s*\n+```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(text.trim())
+      || /^[a-zA-Z0-9_-]+\s*\n+(\{[\s\S]*\})$/i.exec(text.trim());
+    if (textOnlyFence) {
+      const candidateBody = textOnlyFence[1].trim();
+      const candidateCanonical = parseCanonicalEnvelope(candidateBody);
+      const candidateRecovered = recoverTextOnlyBody(candidateBody, candidateCanonical);
+      if (candidateRecovered) {
+        body = candidateBody;
+        canonical = candidateCanonical;
+        recovered = candidateRecovered;
+      }
+    }
+  }
   if (recovered) {
     if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website returned no required tool call.');
     return recovered;
