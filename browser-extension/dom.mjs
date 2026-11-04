@@ -52,7 +52,7 @@ export async function pageBridge(action, adapter, payload = {}) {
   const renderText = node => {
     const walk = element => {
       if (element.nodeType === Node.TEXT_NODE) return element.textContent;
-      if (element.nodeType !== Node.ELEMENT_NODE || element.matches('button,[role="button"],[aria-hidden="true"],script,style,time,.sr-only,.screen-reader-only,.visually-hidden')) return '';
+      if (element.nodeType !== Node.ELEMENT_NODE || element.matches('button,[role="button"],[aria-hidden="true"],script,style,time,.sr-only,.screen-reader-only,.visually-hidden,.ds-think,.ds-think-content,[class*="think-content"],[class*="thinking-content"],details.think,details.reasoning')) return '';
       const style = getComputedStyle(element);
       // Website wrappers can include a screen-reader duplicate of the response
       // and a timestamp. Neither belongs to the assistant's message body.
@@ -116,9 +116,11 @@ export async function pageBridge(action, adapter, payload = {}) {
       if (submitted && text && norm !== promptNorm && !(norm.length > 30 && promptNorm.includes(norm))) {
         if (text.length > 200000) throw new Error('The browser response exceeded the 200,000-character limit.');
         if (text !== prior) { prior = text; lastChanged = Date.now(); }
-        const responseScope = response.closest('article,model-response,[data-testid="assistant-message"],[data-message-author-role="assistant"]') || response.parentElement;
+        const responseScope = response.closest('article,model-response,[data-testid="assistant-message"],[data-message-author-role="assistant"],.ds-message,.chat-message,[class*="message-assistant"]') || response.parentElement?.parentElement || response.parentElement;
         const finishedControl = !!elements(adapter.complete, responseScope || response).length;
-        if (!isBusy && (sawBusy || finishedControl) && Date.now() - lastChanged >= 1800) return { text: prior };
+        const stable = Date.now() - lastChanged >= 1800;
+        const longStable = Date.now() - lastChanged >= 3500;
+        if (!isBusy && ((sawBusy || finishedControl) ? stable : (longStable && prior.length > 0))) return { text: prior };
       }
       await sleep(300);
     }
