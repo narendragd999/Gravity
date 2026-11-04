@@ -2,8 +2,11 @@
 export async function pageBridge(action, adapter, payload = {}) {
   if (location.protocol !== 'https:' || location.hostname !== adapter.host || location.port) throw new Error('This tab is no longer on the allowed chat website. Sign in in Chrome, then retry.');
   const visible = element => {
-    if (!element?.isConnected || !element.getClientRects().length) return false;
-    const style = getComputedStyle(element); return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    if (!element?.isConnected) return false;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    if (!document.hidden && !element.getClientRects().length && element.offsetWidth === 0 && element.offsetHeight === 0) return false;
+    return true;
   };
   const elements = (selectors, root = document) => {
     for (const selector of selectors) {
@@ -15,8 +18,15 @@ export async function pageBridge(action, adapter, payload = {}) {
   const single = selectors => { const matches = elements(selectors); return matches.length >= 1 ? matches[0] : null; };
   const available = element => element && visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true';
   const composer = () => {
-    const result = single(adapter.composer);
-    return result && (result.tagName === 'TEXTAREA' || (result.tagName === 'INPUT' && ['text', 'search'].includes(result.type)) || result.isContentEditable) && !result.readOnly && !result.disabled ? result : null;
+    for (const selector of adapter.composer) {
+      for (const el of elements([selector])) {
+        const editable = (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['text', 'search'].includes(el.type)) || el.isContentEditable);
+        if (editable && !el.readOnly && !el.disabled) return el;
+        const child = el.querySelector?.('textarea, [contenteditable="true"], [contenteditable="plaintext-only"], input[type="text"]');
+        if (child && visible(child) && !child.readOnly && !child.disabled) return child;
+      }
+    }
+    return null;
   };
   const challenge = () => !!elements(['iframe[src*="challenges.cloudflare.com"]', 'iframe[src*="recaptcha"][title*="challenge"]', '[data-testid="challenge-page"]']).length || /^(just a moment|verify you are human|access denied)/i.test(document.title.trim());
   const siteError = () => challenge() ? `${adapter.name} requires a browser verification or sign-in. Complete it yourself in Chrome and retry.` : `${adapter.name} has no supported chat composer. Sign in in Chrome and open a new chat; if already signed in, the website layout may have changed.`;
