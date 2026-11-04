@@ -135,7 +135,9 @@ export class ManagedBridges {
     if (this.closing) throw new Error('The application is shutting down.');
     const entry = this.entry(id);
     if (entry.operation || entry.stopPromise || entry.child || entry.connected) throw new Error('This bridge is already starting, connected, or running. Stop it before starting again.');
-    const { profile, provider } = this.configuration(id);
+    let profile, provider;
+    try { ({ profile, provider } = this.configuration(id)); }
+    catch (error) { entry.state = 'error'; entry.error = error.message; this.changed(); throw error; }
     return this.run(entry, profile, provider, 'start');
   }
 

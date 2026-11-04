@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, session, clipb
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store } from './store.mjs';
 import { WorkspaceService } from './workspace.mjs';
@@ -14,70 +14,18 @@ import { BrowserConnector } from './browser-connector.mjs';
 import { discoverModels } from './providers.mjs';
 import { testProviderGeneration } from './provider-test.mjs';
 import { prepareBrowserExtensionFolders } from './extension-files.mjs';
+import { userDataDirectory, importEnvironmentProviders, startConfiguredServices } from './startup.mjs';
 
-app.setName('Antigravity Studio');
+app.setName('Gravity');
 if (process.platform === 'win32') app.setAppUserModelId('dev.antigravity.studio');
-app.setPath('userData', process.env.ANTIGRAVITY_DATA_DIR ? path.resolve(process.env.ANTIGRAVITY_DATA_DIR) : path.join(app.getPath('appData'), 'Antigravity Studio'));
+app.setPath('userData', userDataDirectory(app.getPath('appData')));
 const here = path.dirname(fileURLToPath(import.meta.url));
 const entry = path.resolve(here, '../dist/index.html');
-const devUrl = process.env.ANTIGRAVITY_DEV_URL;
+const devUrl = process.env.GRAVITY_DEV_URL || process.env.ANTIGRAVITY_DEV_URL;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Development URL must be the local Vite server.');
 let mainWindow, store, gateway, bridge, bridges, browserConnector, runner, quitting = false;
 
-const spawnedBridges = [];
-async function autoStartWebBridges() {
-  const launcherDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath('exe'));
-  
-  // Auto-start Gemini Web2API on port 8081 if not already running
-  const geminiCandidates = [
-    path.resolve(launcherDir, 'gemini-web2api/gemini-web2api.exe'),
-    path.resolve(launcherDir, '../gemini-web2api/gemini-web2api.exe'),
-    path.resolve(launcherDir, '../../gemini-web2api/gemini-web2api.exe'),
-    path.resolve(launcherDir, 'gemini-web2api.exe'),
-    path.resolve(here, '../../gemini-web2api/gemini-web2api.exe'),
-    path.resolve(process.cwd(), 'gemini-web2api/gemini-web2api.exe'),
-    'D:\\Antigravity\\Test\\gemini-web2api\\gemini-web2api.exe'
-  ];
-  for (const exe of geminiCandidates) {
-    try {
-      const stat = await fs.stat(exe).catch(() => null);
-      if (stat && stat.isFile()) {
-        const alive = await fetch('http://127.0.0.1:8081/v1/models', { signal: AbortSignal.timeout(800) }).then(r => r.ok).catch(() => false);
-        if (!alive) {
-          const child = spawn(exe, ['-config', 'config.json'], { cwd: path.dirname(exe), windowsHide: true, stdio: 'ignore', detached: false });
-          spawnedBridges.push(child);
-        }
-        break;
-      }
-    } catch {}
-  }
-
-  // Auto-start Claude Web2API on port 8082 if not already running
-  const claudeCandidates = [
-    path.resolve(launcherDir, 'claude-web2api'),
-    path.resolve(launcherDir, '../claude-web2api'),
-    path.resolve(launcherDir, '../../claude-web2api'),
-    path.resolve(here, '../../claude-web2api'),
-    path.resolve(process.cwd(), 'claude-web2api'),
-    'D:\\Antigravity\\Test\\claude-web2api'
-  ];
-  for (const dir of claudeCandidates) {
-    try {
-      const script = path.join(dir, 'claude_web2api.py');
-      const venvPy = path.join(dir, '.venv/Scripts/python.exe');
-      const stat = await fs.stat(script).catch(() => null);
-      if (stat && stat.isFile()) {
-        const py = (await fs.stat(venvPy).catch(() => null)) ? venvPy : 'python';
-        const alive = await fetch('http://127.0.0.1:8082/', { signal: AbortSignal.timeout(800) }).then(() => true).catch(() => false);
-        if (!alive) {
-          const child = spawn(py, [script], { cwd: dir, windowsHide: true, stdio: 'ignore', detached: false });
-          spawnedBridges.push(child);
-        }
-        break;
-      }
-    } catch {}
-  }
-}
+let serviceStartup = Promise.resolve([]);
 
 const terminals = new Map();
 const workspace = new WorkspaceService();
@@ -115,7 +63,7 @@ async function prepareBrowserExtension() {
     await openChrome('chrome://extensions/');
     return prepared;
   } catch (error) {
-    return { ...prepared, warning: `${error.message} Open chrome://extensions/ manually. Reload an existing Antigravity extension, or load the folder below for a first installation.` };
+    return { ...prepared, warning: `${error.message} Open chrome://extensions/ manually. Reload an existing Gravity extension, or load the folder below for a first installation.` };
   }
 }
 
@@ -239,7 +187,7 @@ async function dispatch(method, args = {}) {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({ width: 1450, height: 960, minWidth: 980, minHeight: 640, title: 'Antigravity Studio', icon: path.join(here, '../build/icon.ico'), backgroundColor: '#f8f9fb', frame: false, show: false,
+  mainWindow = new BrowserWindow({ width: 1450, height: 960, minWidth: 980, minHeight: 640, title: 'Gravity', icon: path.join(here, '../build/icon.ico'), backgroundColor: '#f8f9fb', frame: false, show: false,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false } });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== (devUrl || pathToFileURL(entry).href)) event.preventDefault(); });
@@ -259,86 +207,13 @@ else {
     const encrypt = value => { if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') throw new Error('OS credential encryption is unavailable.'); return safeStorage.encryptString(value).toString('base64'); };
     const decrypt = value => safeStorage.decryptString(Buffer.from(value, 'base64'));
     store = new Store(path.join(app.getPath('userData'), 'state.json'), { encrypt, decrypt });
-    // Portable .env and portable-config.json auto-loader
-    const launcherDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath('exe'));
-    const candidateFiles = [
-      path.join(launcherDir, '.env'),
-      path.join(launcherDir, 'portable-config.json'),
-      path.resolve(here, '../../.env'),
-      path.resolve(here, '../../portable-config.json'),
-      path.resolve(here, '../.env')
-    ];
-    let detectedKeys = {};
-    for (const cf of candidateFiles) {
-      try {
-        if (fs.existsSync(cf)) {
-          const raw = fs.readFileSync(cf, 'utf8');
-          if (cf.endsWith('.json')) {
-            const parsed = JSON.parse(raw);
-            if (parsed.geminiApiKey) detectedKeys.gemini = parsed.geminiApiKey;
-            if (parsed.openaiApiKey) detectedKeys.openai = parsed.openaiApiKey;
-            if (parsed.anthropicApiKey) detectedKeys.anthropic = parsed.anthropicApiKey;
-          } else {
-            for (const line of raw.split(/\r?\n/)) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#')) continue;
-              const idx = trimmed.indexOf('=');
-              if (idx > 0) {
-                const k = trimmed.slice(0, idx).trim();
-                const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
-                if (k === 'GEMINI_API_KEY') detectedKeys.gemini = v;
-                if (k === 'OPENAI_API_KEY') detectedKeys.openai = v;
-                if (k === 'ANTHROPIC_API_KEY') detectedKeys.anthropic = v;
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-    if (process.env.GEMINI_API_KEY) detectedKeys.gemini = process.env.GEMINI_API_KEY;
-    if (process.env.OPENAI_API_KEY) detectedKeys.openai = process.env.OPENAI_API_KEY;
-    if (process.env.ANTHROPIC_API_KEY) detectedKeys.anthropic = process.env.ANTHROPIC_API_KEY;
-
-    let geminiTarget = store.data.providers.find(p => p.type === 'gemini');
-    if (!geminiTarget) {
-      geminiTarget = { id: 'google-gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'], defaultModel: 'gemini-2.5-flash' };
-      store.data.providers.unshift(geminiTarget);
-    } else {
-      if (!geminiTarget.models.includes('gemini-2.5-flash')) geminiTarget.models.unshift('gemini-2.5-flash');
-      if (!geminiTarget.models.includes('gemini-1.5-flash')) geminiTarget.models.push('gemini-1.5-flash');
-    }
-    if (detectedKeys.gemini) {
-      geminiTarget.encryptedApiKey = encrypt(detectedKeys.gemini);
-      geminiTarget.defaultModel = 'gemini-2.5-flash';
-    }
-    if (detectedKeys.openai) {
-      let openaiP = store.data.providers.find(p => p.baseUrl?.includes('openai.com'));
-      if (!openaiP) {
-        openaiP = { id: 'openai', name: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini'], defaultModel: 'gpt-4o-mini' };
-        store.data.providers.push(openaiP);
-      }
-      openaiP.encryptedApiKey = encrypt(detectedKeys.openai);
-    }
-    if (detectedKeys.anthropic) {
-      let anthropicP = store.data.providers.find(p => p.type === 'anthropic');
-      if (!anthropicP) {
-        anthropicP = { id: 'anthropic', name: 'Anthropic', type: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', models: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'], defaultModel: 'claude-3-5-sonnet-20241022' };
-        store.data.providers.push(anthropicP);
-      }
-      anthropicP.encryptedApiKey = encrypt(detectedKeys.anthropic);
-    }
-    if (!store.data.settings.bridgeExecutable) {
-      const launcherDirectory = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath('exe'));
-      for (const nearbyExe of [path.resolve(here, '../../gemini-web2api.exe'), path.resolve(launcherDirectory, '../../gemini-web2api.exe')]) {
-        try { await fs.access(nearbyExe); store.data.settings.bridgeExecutable = nearbyExe; store.data.settings.bridgeConfig = path.join(path.dirname(nearbyExe), 'config.json'); break; } catch { /* Choose service executable in settings. */ }
-      }
-    }
+    importEnvironmentProviders(store);
     store.save();
     gateway = new Gateway({ getProviders: () => store.publicState().providers, getProvider: id => store.provider(id), onChange: changed });
     bridges = new ManagedBridges({ store, onChange: changed });
     browserConnector = new BrowserConnector({ store, onChange: changed, port: !app.isPackaged && process.env.ANTIGRAVITY_TEST_CONNECTOR_PORT === '0' ? 0 : 4319, onReady: ({ url, token }) => {
       const existing = browserProvider();
-      const saved = store.saveProvider({ ...existing, name: existing?.name || '[Browser Tab] Chrome Extension', type: 'openai', baseUrl: url, apiKey: token, headers: {}, models: ['claude-web', 'chatgpt-web', 'deepseek-web', 'qwen-web', 'zai-web', 'gemini-web'], defaultModel: existing?.defaultModel || 'claude-web' });
+      const saved = store.saveProvider({ ...existing, name: existing?.name || 'Browser Connector', type: 'openai', baseUrl: url, apiKey: token, headers: {}, models: ['claude-web', 'chatgpt-web', 'deepseek-web', 'qwen-web', 'zai-web', 'gemini-web'], defaultModel: existing?.defaultModel || 'claude-web' });
       store.data.providers.find(p => p.id === saved.id).managedBy = 'browser-connector'; store.save();
     } });
     bridge = new GeminiBridge({ directory: app.getPath('userData'), onChange: changed, onReady: ({ port, token }) => {
@@ -355,17 +230,15 @@ else {
       return dispatch(method, args);
     });
     createWindow();
-    browserConnector.start().catch(error => { browserConnector.info.error = error.message; changed(); });
-    void autoStartWebBridges();
-    if (store.data.settings.gatewayAutoStart) gateway.start({ port: store.data.settings.gatewayPort, token: store.data.settings.gatewayToken }).catch(error => { gateway.info.error = error.message; changed(); });
+    serviceStartup = startConfiguredServices({ store, gateway, browserConnector, bridge, bridges,
+      gatewayPort: !app.isPackaged && process.env.GRAVITY_TEST_GATEWAY_PORT === '0' ? 0 : undefined, onChange: changed });
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-  }).catch(error => { dialog.showErrorBox('Antigravity Studio could not start', error.message); app.quit(); });
+  }).catch(error => { dialog.showErrorBox('Gravity could not start', error.message); app.quit(); });
 }
 app.on('before-quit', event => {
   if (quitting || !runner) return;
   event.preventDefault(); quitting = true;
   for (const operation of terminals.values()) operation.stop();
-  for (const child of spawnedBridges) { try { child.kill(); } catch {} }
-  Promise.allSettled([runner.shutdown(), gateway.stop(), bridge.stop(), bridges.shutdown(), browserConnector.shutdown()]).finally(() => app.quit());
+  Promise.allSettled([runner.shutdown(), gateway.stop(), bridge.stop(), bridges.shutdown(), browserConnector.shutdown()]).then(() => serviceStartup).finally(() => app.quit());
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

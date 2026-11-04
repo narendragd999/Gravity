@@ -1,0 +1,7 @@
+# Versions inspected in the local Windows Python 3.13.1 environment on 2026-11-04.
+# curl_cffi is the only third-party import in the bridge/panel source.
+# The remaining entries pin its installed runtime dependencies.
+curl_cffi==0.17.0
+cffi==2.1.1
+certifi==2026.10.23
+pycparser==3.12

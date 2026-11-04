@@ -7,3 +7,13 @@ artifacts/
 *.log
 .env*
 !*.example
+
+# Private bridge runtime files are never part of the source distribution.
+bridges/**/.venv/
+bridges/**/venv/
+bridges/**/__pycache__/
+bridges/**/config.json
+bridges/**/cookie*.txt
+bridges/**/cookies*.json
+bridges/**/*.exe
+bridges/**/*.pyc

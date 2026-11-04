@@ -2,12 +2,13 @@
 import { app, BrowserWindow, session } from 'electron';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { SITES } from '../browser-extension/core.mjs';
+import { SITES, parseSiteResult } from '../browser-extension/core.mjs';
 import { pageBridge } from '../browser-extension/dom.mjs';
 
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const windows = new Set();
 const prompt = 'Reply with the fixture completion and the literal code sample.';
+const folderEnvelope = JSON.stringify({ content: null, tool_calls: [{ id: 'folder_call', type: 'function', function: { name: 'run_command', arguments: { command: "New-Item -ItemType Directory -Path 'One','Two'" } } }] });
 const fixtureCode = 'const sample = "<ready>";\nconsole.log(sample);';
 let isolatedSession, checks = 0;
 // Fixtures open sequentially; keep Electron alive between their windows.
@@ -65,9 +66,15 @@ async function fixture(site, options = {}) {
       stop.addEventListener('click', () => { globalThis.fixtureState.stops++; stop.remove(); }); document.body.append(stop);
       if (options.pending) return;
       const assistant = addAssistant('Partial fixture text');
+      if (options.envelope) {
+        const summary = document.createElement('span'); summary.className = 'sr-only'; summary.textContent = 'Claude responded: {"toolcalls":[]}'; assistant.shell.prepend(summary);
+        const clipped = document.createElement('span'); clipped.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)'; clipped.textContent = 'DUPLICATED ACCESSIBILITY SUMMARY'; assistant.shell.prepend(clipped);
+        const hidden = document.createElement('span'); hidden.hidden = true; hidden.textContent = 'HIDDEN DUPLICATE'; assistant.shell.append(hidden);
+        const timestamp = document.createElement('time'); timestamp.textContent = 'just now'; assistant.shell.append(timestamp);
+      }
       setTimeout(() => {
         assistant.paragraph.textContent = 'READY: ' + site.id;
-        const pre = document.createElement('pre'), code = document.createElement('code'); code.textContent = ${JSON.stringify(fixtureCode)}; pre.append(code); assistant.content.append(pre);
+        const pre = document.createElement('pre'), code = document.createElement('code'); code.textContent = options.envelope ? ${JSON.stringify(folderEnvelope)} : ${JSON.stringify(fixtureCode)}; if (options.envelope) assistant.paragraph.remove(); pre.append(code); assistant.content.append(pre);
       }, 250);
       setTimeout(() => {
         stop.remove(); globalThis.fixtureState.finished = true;
@@ -111,6 +118,16 @@ async function run() {
     }
 
     const site = SITES[0];
+    const decorated = await fixture(site, { envelope: true });
+    try {
+      const answer = await invoke(decorated, 'run', site, { id: 'decorated-tool-reply', prompt });
+      assert.doesNotMatch(answer.text, /Claude responded|DUPLICATE|SUMMARY|just now/);
+      const parsed = parseSiteResult(answer.text, [{ type: 'function', function: { name: 'run_command' } }]);
+      assert.equal(parsed.tool_calls.length, 1);
+      assert.equal(JSON.parse(parsed.tool_calls[0].function.arguments).command, "New-Item -ItemType Directory -Path 'One','Two'");
+      checks++; console.log('PASS: Claude response decoration is excluded and fenced folder action reaches the parser intact');
+    } finally { close(decorated); }
+
     for (const [option, expected] of [['wrongHost', /no longer on the allowed/], ['history', /existing conversation/], ['userHistory', /existing conversation/], ['draft', /existing draft/], ['challenge', /requires a browser verification/]]) {
       const win = await fixture(site, { [option]: true });
       try {

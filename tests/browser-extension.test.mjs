@@ -87,7 +87,7 @@ async function workerFixture({ fetchResult, scriptResult, savedLocal = {}, saved
   };
   const storage = data => ({ async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter(key => key in data).map(key => [key, data[key]])); }, async set(values) { Object.assign(data, values); }, async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key]; }, async setAccessLevel(value) { calls.push(['accessLevel', value]); } });
   const chrome = {
-    runtime: { id: 'abcdefghijklmnopabcdefghijklmnop', getManifest() { return { version: '1.0.2' }; }, onMessage: { addListener(listener) { calls.push(['listener', listener]); } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
+    runtime: { id: 'abcdefghijklmnopabcdefghijklmnop', getManifest() { return { version: '1.0.5' }; }, onMessage: { addListener(listener) { calls.push(['listener', listener]); } }, onStartup: { addListener() {} }, onInstalled: { addListener() {} } },
     alarms: { async create(...args) { calls.push(['alarm', ...args]); }, onAlarm: { addListener() {} } },
     storage: { local: storage(local), session: storage(session) },
     tabs: {
@@ -114,12 +114,12 @@ test('worker sends extension identity, version and protocol on every RPC and omi
   const worker = await workerFixture(); worker.setAuth({ token: 'separate-local-pair-token' });
   await worker.rpc('/connector/pair/status', { id: 'pair', nonce: 'nonce' }, { paired: false });
   await worker.rpc('/connector/heartbeat', { sites: [] });
-  for (const request of worker.requests) { assert.ok(request.url.startsWith(`${CONNECTOR_ORIGIN}/connector/`)); assert.equal(request.options.credentials, 'omit'); assert.equal(request.options.redirect, 'error'); assert.equal(request.options.headers['x-connector-extension-id'], worker.chrome.runtime.id); assert.equal(request.options.headers['x-connector-protocol'], '2'); assert.equal(request.options.headers['x-connector-version'], '1.0.2'); }
+  for (const request of worker.requests) { assert.ok(request.url.startsWith(`${CONNECTOR_ORIGIN}/connector/`)); assert.equal(request.options.credentials, 'omit'); assert.equal(request.options.redirect, 'error'); assert.equal(request.options.headers['x-connector-extension-id'], worker.chrome.runtime.id); assert.equal(request.options.headers['x-connector-protocol'], '3'); assert.equal(request.options.headers['x-connector-version'], '1.0.5'); }
   assert.equal(worker.requests[0].options.headers.authorization, undefined);
   assert.equal(worker.requests[1].options.headers.authorization, 'Bearer separate-local-pair-token');
   assert.doesNotMatch(JSON.stringify(worker.publicState()), /separate-local-pair-token/);
-  assert.equal(worker.publicState().extensionVersion, '1.0.2');
-  assert.equal(worker.publicState().protocol, 2);
+  assert.equal(worker.publicState().extensionVersion, '1.0.5');
+  assert.equal(worker.publicState().protocol, 3);
 });
 
 test('worker scans only allowed site URLs and creates a fresh owned tab per job', async () => {
@@ -133,7 +133,47 @@ test('worker scans only allowed site URLs and creates a fresh owned tab per job'
   assert.equal(worker.tabs.has(9), true, 'Existing conversation tab must remain untouched.');
   assert.equal(worker.tabs.size, 1, 'Only the successful task tab should be closed.');
   const result = worker.requests.find(request => request.url.endsWith('/results'));
-  assert.equal(result.body.siteId, 'claude'); assert.equal(result.body.result.content, 'New fixture answer.');
+  assert.equal(result.body.siteId, 'claude'); assert.equal(result.body.rawText, 'New fixture answer.');
+});
+
+test('worker forwards website envelopes verbatim and leaves validation failures for desktop reporting', async () => {
+  const desktopError = 'Invalid website response: malformed action envelope. No command was executed.';
+  for (const [rawText, rejected] of [
+    ['\n{“content”:”Hello! I’m Gravity.”,”tool_calls”:[]}\n', false],
+    ['```json\n' + envelope() + '\n```', false],
+    ['{“content”:null,”tool_calls”:[{“function”:{“name”:”read_file”}}]}', true]
+  ]) {
+    const worker = await workerFixture({
+      scriptResult: options => options.args[0] === 'run' ? { text: rawText } : { connected: true, busy: false },
+      fetchResult: (url, options) => {
+        const body = JSON.parse(options.body);
+        if (rejected && url.endsWith('/results') && Object.hasOwn(body, 'rawText')) {
+          return new Response(JSON.stringify({ error: { message: desktopError } }), { status: 422 });
+        }
+        return { ok: true };
+      }
+    });
+    worker.setAuth({ token: 'fixture-token' });
+    await worker.runJob(job);
+
+    const results = worker.requests.filter(request => request.url.endsWith('/results'));
+    assert.deepEqual(results[0].body, { id: job.id, siteId: job.siteId, rawText }, 'The desktop receives the original text, never a locally parsed result');
+    assert.equal(results[0].options.headers['x-connector-protocol'], '3');
+    assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
+    assert.equal(worker.active.size, 0);
+    assert.equal(worker.session.ownedJobs.length, 0);
+    if (rejected) {
+      assert.equal(results.length, 2);
+      assert.deepEqual(results[1].body, { id: job.id, siteId: job.siteId, error: desktopError });
+      assert.equal(worker.publicState().error, desktopError);
+      assert.equal(worker.tabs.size, 1, 'The failed task tab remains available to inspect the website response');
+      assert.equal(worker.calls.some(call => call[0] === 'remove'), false);
+    } else {
+      assert.equal(results.length, 1);
+      assert.equal(worker.tabs.size, 0, 'Only desktop acceptance closes the task tab');
+      assert.equal(worker.publicState().error, '');
+    }
+  }
 });
 
 test('worker refuses an existing-conversation redirect before injecting the prompt', async () => {
@@ -154,7 +194,7 @@ test('Qwen and Z.ai submit once when the composer is ready while Chrome still re
     const operations = worker.calls.filter(call => call[0] === 'script').map(call => call[1]);
     assert.deepEqual(operations, ['probe', 'run']);
     for (const call of worker.calls.filter(call => call[0] === 'script')) assert.equal(call[3].injectImmediately, true, 'Loading pages are inspected and submitted without waiting for document_idle');
-    assert.equal(worker.requests.find(request => request.body?.result)?.body.siteId, siteId);
+    assert.equal(worker.requests.find(request => request.body?.rawText)?.body.siteId, siteId);
     assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 0);
   }
 });
@@ -170,7 +210,7 @@ test('worker waits for a delayed composer and reduces the remaining generation b
   assert.equal(probes, 101); assert.equal(runPayload.timeoutMs, 145000);
   assert.ok(Number.isFinite(runPayload.deadlineAt), 'A late injection receives the absolute request deadline');
   assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
-  assert.ok(worker.requests.some(request => request.body?.result));
+  assert.ok(worker.requests.some(request => request.body?.rawText));
 });
 
 test('worker reports composer readiness failure without submitting or claiming completion', async () => {
@@ -179,7 +219,7 @@ test('worker reports composer readiness failure without submitting or claiming c
   await worker.runJob({ ...job, tools: [] });
   assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
   const result = worker.requests.find(request => request.url.endsWith('/results')).body;
-  assert.equal(result.result, undefined); assert.match(result.error, /45 seconds.*Sign in.*No prompt was submitted/);
+  assert.equal(result.rawText, undefined); assert.match(result.error, /45 seconds.*Sign in.*No prompt was submitted/);
   assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 1, 'Failure tab remains available for inspection');
 });
 
@@ -202,7 +242,7 @@ test('cancelling while readiness is being checked never submits the prompt', asy
   await worker.cancelJobs([job.id]); await running;
   finishProbe({ connected: true, busy: false }); await Promise.resolve();
   assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
-  assert.equal(worker.requests.some(request => request.body?.result), false);
+  assert.equal(worker.requests.some(request => request.body?.rawText), false);
   assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 0);
 });
 
@@ -232,7 +272,7 @@ test('hung readiness reads expire without submitting a late or duplicate prompt'
     assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
     const result = worker.requests.find(request => request.url.endsWith('/results')).body;
     assert.match(result.error, /No prompt was submitted/);
-    assert.equal(result.result, undefined); assert.equal(worker.active.size, 0);
+    assert.equal(result.rawText, undefined); assert.equal(worker.active.size, 0);
   }
 });
 
@@ -246,7 +286,7 @@ test('worker cancellation stops only its owned task and never submits duplicate 
   assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1);
   await worker.cancelJobs([job.id]); finish({ text: 'Ignored cancelled answer.' }); await running;
   assert.equal(worker.tabs.has(9), true); assert.equal(worker.active.size, 0);
-  assert.equal(worker.requests.some(request => request.body?.result), false);
+  assert.equal(worker.requests.some(request => request.body?.rawText), false);
 });
 
 test('a never-resolving run injection is cancelled without blocking the site or resubmitting', async () => {
@@ -272,7 +312,7 @@ test('a never-resolving run injection expires once without accepting a response'
   await worker.runJob({ ...job, tools: [] });
   assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
   const results = worker.requests.filter(request => request.url.endsWith('/results'));
-  assert.equal(results.length, 1); assert.equal(results[0].body.result, undefined);
+  assert.equal(results.length, 1); assert.equal(results[0].body.rawText, undefined);
   assert.match(results[0].body.error, /before its deadline.*No completed response was accepted/);
   assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 1, 'Failed task remains available for inspection');
 });

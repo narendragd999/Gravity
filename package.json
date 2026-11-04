@@ -1,9 +1,9 @@
 {
-  "name": "antigravity-studio",
-  "version": "1.4.3",
+  "name": "gravity",
+  "version": "1.5.2",
   "private": true,
-  "description": "An independent desktop agent workspace with configurable model providers and a local API gateway.",
-  "author": "Antigravity Studio contributors",
+  "description": "A portable desktop agent workspace with browser connections and a built-in local API.",
+  "author": "Gravity contributors",
   "license": "MIT",
   "type": "module",
   "main": "electron/main.mjs",
@@ -38,11 +38,11 @@
   },
   "build": {
     "appId": "dev.antigravity.studio",
-    "productName": "Antigravity Studio",
+    "productName": "Gravity",
     "directories": { "output": "release" },
     "files": ["dist/**/*", "electron/**/*", "browser-extension/**/*", "package.json", "build/icon.ico", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "!node_modules/**/*"],
     "npmRebuild": false,
     "win": { "target": "portable", "icon": "build/icon.ico", "signExecutable": false },
-    "artifactName": "Antigravity-Studio-${version}-${arch}.${ext}"
+    "artifactName": "Gravity-${version}-${arch}.${ext}"
   }
 }

@@ -52,7 +52,12 @@ export async function pageBridge(action, adapter, payload = {}) {
   const renderText = node => {
     const walk = element => {
       if (element.nodeType === Node.TEXT_NODE) return element.textContent;
-      if (element.nodeType !== Node.ELEMENT_NODE || element.matches('button,[role="button"],[aria-hidden="true"],script,style')) return '';
+      if (element.nodeType !== Node.ELEMENT_NODE || element.matches('button,[role="button"],[aria-hidden="true"],script,style,time,.sr-only,.screen-reader-only,.visually-hidden')) return '';
+      const style = getComputedStyle(element);
+      // Website wrappers can include a screen-reader duplicate of the response
+      // and a timestamp. Neither belongs to the assistant's message body.
+      if (element.hidden || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return '';
+      if (['absolute', 'fixed'].includes(style.position) && parseFloat(style.width) <= 1 && parseFloat(style.height) <= 1 && (style.clip !== 'auto' || style.clipPath !== 'none' || style.overflow === 'hidden')) return '';
       if (element.tagName === 'PRE') { const code = element.querySelector('code') || element; return '\n```\n' + code.textContent + '\n```\n'; }
       if (element.tagName === 'BR') return '\n';
       const text = [...element.childNodes].map(walk).join('');

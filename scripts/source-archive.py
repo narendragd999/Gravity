@@ -10,9 +10,9 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FOLDERS = ('src', 'electron', 'browser-extension', 'tests', 'docs', 'scripts', 'build')
+FOLDERS = ('src', 'electron', 'browser-extension', 'bridges', 'tests', 'docs', 'scripts', 'build')
 FILES = (
-    '.gitignore', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
+    '.gitignore', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
     'tsconfig.json', 'vite.config.ts', 'index.html',
     'gateway.config.example.json', 'gemini.config.example.json', 'universal-web2api.config.example.json',
     'README.md', 'LICENSE', 'THIRD_PARTY.md', 'THIRD_PARTY_LICENSES.txt',
@@ -24,7 +24,7 @@ EXCLUDED_NAMES = {
     'bridge-runtime.json', 'credentials.json', 'auth.json', 'config.json',
 }
 EXCLUDED_SUFFIXES = {'.log', '.pyc', '.pyo', '.pem', '.key', '.p12', '.pfx'}
-PREFIX = 'antigravity-desktop/'
+PREFIX = 'Gravity/'
 
 
 def excluded(relative):
@@ -97,7 +97,7 @@ def main():
     if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', version):
         raise ValueError('package.json must contain a filename-safe semantic version')
     inventory = source_inventory()
-    destination = ROOT / 'release' / f'Antigravity-Studio-{version}-source.zip'
+    destination = ROOT / 'release' / f'Gravity-{version}-source.zip'
     if args.check_inputs:
         print(f'PASS: {len(inventory)} source files validated; credential and runtime paths excluded.')
         return

@@ -15,9 +15,9 @@ function redact(value, provider) {
 }
 
 function checkBrowserReadiness(model, status) {
-  if (!status?.running) throw new ProviderError('Start the Browser connector in Settings → Web2API bridges, then test again.', 503, 'browser_not_running');
-  if (status.error) throw new ProviderError(`The Browser connector needs attention: ${status.error} Open Settings → Web2API bridges.`, 503, 'browser_error');
-  if (!status.paired) throw new ProviderError('Pair and approve the Chrome extension in Settings → Web2API bridges, then test again.', 503, 'browser_not_paired');
+  if (!status?.running) throw new ProviderError('Start the Browser connector in Settings → Browser Connector, then test again.', 503, 'browser_not_running');
+  if (status.error) throw new ProviderError(`The Browser connector needs attention: ${status.error} Open Settings → Browser Connector.`, 503, 'browser_error');
+  if (!status.paired) throw new ProviderError('Pair and approve the Chrome extension in Settings → Browser Connector, then test again.', 503, 'browser_not_paired');
   const route = BROWSER_SITES.find(site => site.model === model);
   if (!route) throw new ProviderError('Choose a browser model such as claude-web from this provider’s Model IDs.', 400, 'browser_unknown_model');
   const site = status.sites?.find(site => site.id === route.id);

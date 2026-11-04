@@ -1,17 +1,15 @@
 import { ReactNode, useRef, useState } from 'react';
 import { CheckCircle2, Chrome, Cpu, FolderOpen, Loader2, Play, Plus, RefreshCw, Save, Server, Square, Trash2, X } from 'lucide-react';
 import { AppState, BridgeProfile, BridgeRuntime, Invoke, errorText } from './types';
-import BrowserSetup from './BrowserSetup';
 
-const BROWSER_CONNECTOR = '__browser_connector';
 const BUILTIN_GEMINI = '__builtin_gemini';
 type ProfileDraft = Omit<BridgeProfile, 'id' | 'args' | 'env'> & { id?: string; argsJson: string; envJson: string };
 const blankProfile = (providerId = ''): ProfileDraft => ({ name: '', providerId, launchMode: 'external', executable: '', argsJson: '[]', cwd: '', envJson: '{}', healthUrl: '', startupTimeoutMs: 30000 });
 const toDraft = (profile: BridgeProfile): ProfileDraft => ({ ...profile, argsJson: JSON.stringify(profile.args || [], null, 2), envJson: JSON.stringify(profile.env || {}, null, 2) });
 
-export default function Bridges({ state, call, onAddProvider, children }: { state: AppState; call: Invoke; onAddProvider(): void; children: ReactNode }) {
-  const [selected, setSelected] = useState<string | null>(BROWSER_CONNECTOR);
-  const [draft, setDraft] = useState<ProfileDraft>(() => blankProfile(state.providers[0]?.id));
+export default function Bridges({ state, call, onAddProvider, onBrowserSetup, children }: { state: AppState; call: Invoke; onAddProvider(): void; onBrowserSetup(): void; children: ReactNode }) {
+  const [selected, setSelected] = useState<string | null>(state.bridgeProfiles[0]?.id || BUILTIN_GEMINI);
+  const [draft, setDraft] = useState<ProfileDraft>(() => state.bridgeProfiles[0] ? toDraft(state.bridgeProfiles[0]) : blankProfile(state.providers.find(p => p.managedBy !== 'browser-connector')?.id));
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
   const [removeConfirm, setRemoveConfirm] = useState(false);
@@ -69,40 +67,39 @@ export default function Bridges({ state, call, onAddProvider, children }: { stat
 
   return <>
     <div className="section-eyebrow">WEB2API CONNECTIONS</div>
-    <h2>Your accounts, your models.</h2>
-    <p className="muted">Connect website accounts through Chrome, use the Gemini adapter, or configure your own web-to-API bridge.</p>
+    <h2>Web2API Bridges</h2>
+    <p className="muted">Optional connections to adapters you already have. Save each adapter once and Gravity starts it on launch.</p><button className="browser-provider-shortcut" onClick={onBrowserSetup}><Chrome size={20} /><span><strong>Just want to use a website account?</strong><small>Use Browser Connector. No adapter or configuration file needed.</small></span></button><label className="check-label"><input type="checkbox" checked={state.settings.bridgesAutoStart} disabled={!!busy} onChange={e => { const bridgesAutoStart = e.target.checked; void task('settings', async () => { await call('settings:save', { bridgesAutoStart }); }); }} />Start saved bridge profiles when Gravity opens</label>
     <div className="provider-pills bridge-profile-pills">
-      <button data-testid="browser-connector-tab" className={selected === BROWSER_CONNECTOR ? 'active' : ''} disabled={!!busy} onClick={() => { setSelected(BROWSER_CONNECTOR); setNotice(null); }}><Chrome size={14} />Browser connector</button>
-      <button className={selected === BUILTIN_GEMINI ? 'active' : ''} disabled={!!busy} onClick={() => { setSelected(BUILTIN_GEMINI); setNotice(null); }}><Server size={14} />Gemini · built in</button>
+      <button className={selected === BUILTIN_GEMINI ? 'active' : ''} disabled={!!busy} onClick={() => { setSelected(BUILTIN_GEMINI); setNotice(null); }}><Server size={14} />Gemini adapter</button>
       {profiles.map(profile => <button key={profile.id} className={selected === profile.id ? 'active' : ''} disabled={!!busy} onClick={() => selectProfile(profile)}><Server size={14} />{profile.name}</button>)}
       <button data-testid="bridge-profile-new" className={selected === null ? 'active' : ''} disabled={!!busy} onClick={() => selectProfile()}><Plus size={14} />Add bridge</button>
     </div>
-    {selected === BROWSER_CONNECTOR ? <BrowserSetup state={state} call={call} /> : selected === BUILTIN_GEMINI ? children : <>
-      <div className="bridge-adapter-help">Websites such as Claude, ChatGPT, Qwen, DeepSeek, and Z.ai each need a compatible installed adapter and their own login or session. Naming a provider does not install an adapter or add support for that website.</div>
+    {selected === BUILTIN_GEMINI ? children : <>
+      <div className="bridge-adapter-help">Use Managed to launch an installed adapter with Gravity, or External to connect to a server that is already running.</div>
       <div className="form-grid bridge-profile-grid">
         <label className="field">Bridge profile name<input id="bridge-profile-name" value={draft.name} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder="My web adapter" /></label>
         <label className="field">Launch mode<select id="bridge-profile-mode" value={draft.launchMode} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, launchMode: event.target.value as BridgeProfile['launchMode'] }))}><option value="external">External · already running</option><option value="managed">Managed · start from this app</option></select></label>
       </div>
       <div className="field-heading"><label htmlFor="bridge-profile-provider">Model provider</label><button className="text-btn" onClick={onAddProvider} disabled={!!busy}><Plus size={13} />Add provider</button></div>
       <select id="bridge-profile-provider" className="bridge-provider-select" value={draft.providerId} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, providerId: event.target.value }))}>
-        <option value="">Choose a provider</option>{state.providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        <option value="">Choose a provider</option>{state.providers.filter(item => item.managedBy !== 'browser-connector').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select>
       {provider ? <p className="field-help"><Cpu size={13} /><span>{provider.baseUrl} · {provider.type === 'openai' ? 'OpenAI compatible' : provider.type === 'anthropic' ? 'Anthropic Messages' : 'Google Gemini'}</span></p> : <p className="field-help">Save a provider in Models & providers, then link it here.</p>}
       <p className="field-help">{managed ? 'Use a provider with a loopback base URL. Start launches the executable you configure below. The adapter must stay in the foreground; do not use a launcher that exits or detaches the server.' : 'Start your adapter separately, then use Check connection. This app will not launch an external adapter.'}</p>
       {managed && <>
         <label className="field" htmlFor="bridge-profile-executable">Executable</label>
         <div className="browse-input"><input id="bridge-profile-executable" value={draft.executable} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, executable: event.target.value }))} placeholder="Absolute path to python.exe, node.exe, or an adapter executable" spellCheck={false} /><button className="secondary-btn" aria-label="Browse bridge executable" disabled={fieldsDisabled} onClick={() => choose('executable')}><FolderOpen size={15} />Browse</button></div>
-        <label className="field">Arguments JSON<textarea id="bridge-profile-args" rows={3} className="bridge-json" value={draft.argsJson} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, argsJson: event.target.value }))} placeholder={'["-m", "your_adapter"]'} spellCheck={false} /></label>
+        <details className="advanced"><summary>Launch arguments & environment</summary><label className="field">Arguments JSON<textarea id="bridge-profile-args" rows={3} className="bridge-json" value={draft.argsJson} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, argsJson: event.target.value }))} placeholder={'["-m", "your_adapter"]'} spellCheck={false} /></label>
         <p className="field-help">Use the launch arguments documented by your installed adapter. Each argument is a separate JSON string. Arguments are stored as plain text; put credentials in encrypted environment variables or provider settings.</p>
         <label className="field" htmlFor="bridge-profile-directory">Working directory</label>
         <div className="browse-input"><input id="bridge-profile-directory" value={draft.cwd} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, cwd: event.target.value }))} placeholder="Absolute path to the adapter folder" spellCheck={false} /><button className="secondary-btn" aria-label="Browse bridge working directory" disabled={fieldsDisabled} onClick={() => choose('directory')}><FolderOpen size={15} />Browse</button></div>
         <label className="field">Environment variables JSON<textarea id="bridge-profile-env" rows={3} className="bridge-json" value={draft.envJson} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, envJson: event.target.value }))} placeholder={'{"ADAPTER_PORT": "8082"}'} spellCheck={false} autoComplete="off" /></label>
-        <p className="field-help">Stored values are encrypted and displayed as ********. Keep a mask unchanged to retain its saved value; remove a key to delete it. Configure API credentials on the linked provider.</p>
+        <p className="field-help">Stored values are encrypted and displayed as ********. Keep a mask unchanged to retain its saved value; remove a key to delete it. Configure API credentials on the linked provider.</p></details>
       </>}
-      <label className="field">Health URL <span className="optional">Optional</span><input id="bridge-profile-health" value={draft.healthUrl || ''} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, healthUrl: event.target.value }))} placeholder="Leave blank to check the provider API" spellCheck={false} /></label>
+      <details className="advanced"><summary>Advanced connection checks</summary><label className="field">Health URL <span className="optional">Optional</span><input id="bridge-profile-health" value={draft.healthUrl || ''} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, healthUrl: event.target.value }))} placeholder="Leave blank to check the provider API" spellCheck={false} /></label>
       <p className="field-help">A custom health URL must use the same origin as the provider base URL.</p>
       {managed && <label className="field inline-field">Startup timeout (milliseconds)<input id="bridge-profile-timeout" type="number" min={1000} max={180000} step={1000} value={draft.startupTimeoutMs} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, startupTimeoutMs: Number(event.target.value) }))} /></label>}
-      <div className={`connection-card ${runtime?.state === 'ready' ? 'online' : ''}`} aria-live="polite">
+      </details><div className={`connection-card ${runtime?.state === 'ready' ? 'online' : ''}`} aria-live="polite">
         <div>{runtime?.starting ? <Loader2 size={21} className="spin" /> : <Server size={21} />}<strong>{status}</strong></div>
         {provider && <code>{provider.baseUrl}</code>}
         <span>{managed ? 'Managed profile · Save never starts a process' : 'External adapter · Disconnect leaves its process running'}</span>

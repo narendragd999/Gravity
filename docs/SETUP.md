@@ -2,7 +2,7 @@
 
 ## Run the desktop
 
-From `E:\application\Antigravity\antigravity-desktop`, install dependencies with `npm install`, build with `npm run build`, and launch with `npm start`. Node.js 24 with npm is recommended; the implementation was tested with Node 24.22.1 on Windows. Git must be on PATH for the Changes panel. The editor, chat UI, and direct file operations work without Git.
+Double-click **`Gravity-1.5.2-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. For source development, open the `Gravity` repository folder, run `npm ci`, `npm run build`, and `npm start` with Node.js 24. Git is needed only for the Changes panel; the editor, chat, and direct file operations work without Git.
 
 `npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`. `npm run pack` creates an unpacked desktop distribution from the existing build. Run `npm run build` before `npm run pack`.
 
@@ -10,9 +10,9 @@ A packaged executable supplies its own Electron runtime. It still needs your sel
 
 ## Connect signed-in Chrome accounts
 
-For Claude, ChatGPT, DeepSeek, Qwen, Z.ai, and Gemini, open **Settings → Web2API bridges → Browser connector** and follow the [Chrome quick start](BROWSER-CONNECTOR.md#one-time-chrome-setup). **Start browser connector** creates the **Connected Chrome** provider and all six model routes. **Open extension setup** prepares the bundled extension and opens Chrome's extensions page. Install it once with **Developer mode → Load unpacked**, click **Connect** in its popup, and approve the matching request in the desktop.
+For Claude, ChatGPT, DeepSeek, Qwen, Z.ai, and Gemini, open **Settings → Browser Connector** and follow the [Chrome quick start](BROWSER-CONNECTOR.md#one-time-chrome-setup). The connector starts automatically and creates the **Browser Connector** provider and all six website routes. Older profiles may retain its name **Connected Chrome**. **Open extension setup** prepares the bundled extension and opens Chrome's extensions page. Install it once with **Developer mode → Load unpacked**, click **Connect** in its popup, and approve the matching request in the desktop.
 
-Keep a signed-in tab open for each service in the Chrome profile containing the extension. Choose its **Connected Chrome** model in a conversation and send a simple test message. No separate Python environment, Git checkout, configuration file, or cookie export is needed for this method. Restarting the connector requires pairing again; website sessions stay in Chrome.
+Keep a signed-in tab open for each service in the Chrome profile containing the extension. Choose its browser model in a conversation and send a simple test message. No separate Python environment, Git checkout, configuration file, or cookie export is needed for this method. Approved pairing is saved with Windows encryption and reused after normal app or connector restarts; website sessions stay in Chrome.
 
 These routes select websites. Choose the actual model through the website's own controls. The adapters are experimental and tested with synthetic local pages; detecting a tab or passing a fixture test does not establish live account compatibility. See [supported routes, privacy, and troubleshooting](BROWSER-CONNECTOR.md). The following provider setup is for direct APIs and separately prepared API bridges; browser setup already creates its provider.
 
@@ -40,7 +40,7 @@ Provider keys and advanced-header values are encrypted in desktop state. Existin
 
 **Test model** sends a short, fixed message to the saved default model and requires a nonempty text response. It does not send conversation history, project files, or tool definitions. It can use provider quota and, for browser models, appear in website history. Discovery remains separate and is not required for testing a manually entered model. Browser tests first check that the connector is running, the extension is paired, and the selected website tab is detected and available. A successful test verifies a text response at that time; test project tools separately with a model that supports tool calls.
 
-Settings initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
+The Get started page offers browser and API-key setup. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
 
 ## Projects, agents, and changes
 
@@ -56,14 +56,14 @@ File tools are bounded to the selected project, reject traversal and symlink/jun
 
 ## Start a Gemini web2api bridge
 
-For existing Chrome logins across all six websites, use the [browser connector](BROWSER-CONNECTOR.md). For custom API backends or the headless universal service, see [Universal Web2API connections](UNIVERSAL-WEB2API.md). **Settings → Web2API bridges** also supports external and managed process profiles. The existing Gemini launcher is the **Gemini · built in** choice on that page.
+For existing Chrome logins across all six websites, use the [browser connector](BROWSER-CONNECTOR.md). For custom API backends or the headless universal service, see [Universal Web2API connections](UNIVERSAL-WEB2API.md). **Settings → Web2API Bridges** also supports external and managed process profiles. The existing Gemini launcher is available on that page.
 
 The integration targets [ikhsan3adi/gemini-web2api](https://github.com/ikhsan3adi/gemini-web2api). The inspected source revision is recorded in [reverse-engineering.md](reverse-engineering.md). Its `go.mod` requires Go 1.26.5 if you build that revision from source; a separate Windows executable can also be used.
 
 1. Obtain or build the bridge executable following its upstream instructions.
 2. Prepare your own Gemini session cookie file and bridge JSON configuration using the upstream setup instructions. `gemini.config.example.json` in this project is a starting configuration for managed launch; it contains no working session credentials. Keep these files outside source control.
 3. Set `cookie_file` in your configuration. Relative paths are resolved against that configuration's directory. If omitted, the app uses `cookie.txt` in the same directory.
-4. Open **Settings → Web2API bridges → Gemini · built in**, select the executable and configuration, and choose an unused port such as `8081`.
+4. Open **Settings → Web2API Bridges**, select the executable and configuration, and choose an unused port such as `8081`.
 5. Select **Save & start bridge**. The app creates a temporary launch configuration bound to `127.0.0.1`, generates an API token, disables request logging, and starts the selected executable. It updates the **Gemini Web2API** provider when the health endpoint responds.
 6. Open **Models & providers**, discover the bridge's model IDs, save them, and send a chat message to check actual generation.
 
@@ -71,9 +71,15 @@ The original configuration and cookie file remain in place. The app does not rea
 
 The bridge uses a changing private web protocol. Expired sessions, upstream throttling, model entitlements, or protocol changes can prevent inference even when process health and model listing work. The inspected bridge returns a static model registry, can fall back for unknown names, and emulates tool calls from prompted output. Tool-call responses may be buffered into one SSE event. These behaviors are properties of the upstream bridge.
 
+## Automatic startup and text size
+
+Browser Connector and the API start when Gravity opens by default. Saved custom bridge profiles are started or checked automatically, and a Gemini bridge starts when its executable and configuration have been selected. The startup controls on each settings page let you disable this. Startup failures remain on the relevant service card and do not block the other services or the desktop.
+
+Open **Settings → Appearance** for Standard (100%), Comfortable (110%, default), or Large (125%) text and interface sizes. Your selection is saved automatically.
+
 ## Use the desktop's API gateway
 
-In **Settings → API gateway**, select a port different from the bridge port, copy the generated gateway access token, and select **Save & start gateway**. Default base URL: `http://127.0.0.1:4318/v1`. Stop the gateway before changing its port or token. Optional autostart applies when this desktop app opens; it is not a Windows background service.
+Gravity's local API starts with the app by default. In **Settings → API**, copy its URL and access token into your client. The default base URL is `http://127.0.0.1:4318/v1`; a custom port and token are available in advanced settings. Stop the gateway before changing either. The startup toggle applies when Gravity opens; it is not a Windows background service. Existing explicit startup preferences are retained.
 
 The gateway token is distinct from your provider API keys. Native API clients use it as an OpenAI-style bearer token. The gateway routes requests to configured providers but does not run the desktop agent loop or execute returned tool calls. Client applications own their own tool-execution loop.
 
@@ -143,15 +149,15 @@ An unauthenticated local provider can omit `apiKeyEnv`. Keep tokens out of commi
 
 ## Local data and recovery
 
-Desktop data defaults to `%APPDATA%\Antigravity Studio\state.json`. It contains project references, conversation content, settings, the gateway token, and encrypted provider secrets. Treat this directory as private local data. Provider encryption is tied to the operating-system user; copying this file to another machine is not a credential migration mechanism.
+New profiles use `%APPDATA%\Gravity\state.json`. An existing Antigravity Studio profile remains at `%APPDATA%\Antigravity Studio\state.json` so saved credentials and extension locations continue to work. It contains project references, conversation content, settings, the gateway token, and encrypted provider secrets. Treat this directory as private local data. Provider encryption is tied to the operating-system user; copying this file to another machine is not a credential migration mechanism.
 
-Browser extension setup copies the bundled files into `%APPDATA%\Antigravity Studio\browser-extension\<app-version>`. The generated **Connected Chrome** provider key is encrypted like other provider keys and rotates when the connector starts. The separate extension pairing token is stored by Chrome's extension and held only in memory by the desktop; stopping or restarting the connector invalidates it. Website logins remain in Chrome and are not copied into desktop state.
+Browser extension setup copies the bundled files into `browser-extension\current` inside the active profile directory and updates recognized older versioned folders in place. The generated browser provider key is encrypted like other provider keys and rotates when the connector starts. The separate approved extension pairing token is encrypted in desktop state and retained by Chrome's extension, allowing reconnection after a normal restart. Revoke access in Browser Connector settings to remove that saved approval. Website logins remain in Chrome and are not copied into desktop state.
 
-While a managed bridge is running, `%APPDATA%\Antigravity Studio\bridge-runtime.json` contains its temporary bearer token and copied launch settings. A plaintext launch file is required by the external bridge executable. The app removes it on managed stop; an abnormal process or machine termination may leave it behind. Keep user-data directories out of shared folders and source control. Cookie and source configuration files stay at the paths you selected.
+While a managed bridge is running, `bridge-runtime.json` in the active profile directory contains its temporary bearer token and copied launch settings. A plaintext launch file is required by the external bridge executable. The app removes it on managed stop; an abnormal process or machine termination may leave it behind. Keep user-data directories out of shared folders and source control. Cookie and source configuration files stay at the paths you selected.
 
 File replacements create backups in each project's `.antigravity/backups/`. Each backup JSON records the original relative path and contents. Restore deliberately after comparing with current files. Add `.antigravity/` to a project's `.gitignore` when appropriate; the app does not modify that project's ignore rules automatically.
 
-For an isolated development profile, set `ANTIGRAVITY_DATA_DIR` to a separate absolute directory before launching. The app does not overwrite malformed state files during startup; correct or move the damaged file after preserving a copy.
+For an isolated development profile, set `GRAVITY_DATA_DIR` (or the legacy `ANTIGRAVITY_DATA_DIR`) to a separate absolute directory before launching. The app does not overwrite malformed state files during startup; correct or move the damaged file after preserving a copy.
 
 ## Troubleshooting and verification
 
@@ -162,7 +168,7 @@ For an isolated development profile, set `ANTIGRAVITY_DATA_DIR` to a separate ab
 | Unknown model | Exact upstream ID, saved provider model list, and namespaced gateway ID |
 | Discovery works but chat fails | Real account entitlement, generation credentials, quota, and tool support |
 | Chrome connector has no detected tab | Sign in in the same Chrome profile as the extension, keep the service tab open, and refresh the extension status; see [browser troubleshooting](BROWSER-CONNECTOR.md#troubleshooting) |
-| Chrome pairing expired or was revoked | Start the connector, click Connect in its extension popup, and approve the matching request again |
+| Chrome pairing was revoked or extension data was cleared | Start the connector, click Connect in its extension popup, and approve the matching request again |
 | Bridge startup fails | Executable/config paths, cookie-file location, available port, and Process output |
 | File changed since read | Reload current file and prepare a fresh edit; do not overwrite newer work |
 | Text file will not open | UTF-8 encoding, file size, and whether the path redirects outside the project |

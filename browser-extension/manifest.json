@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Antigravity Studio Browser Connector",
-  "version": "1.0.2",
+  "name": "Gravity Browser Connector",
+  "version": "1.0.5",
   "minimum_chrome_version": "120",
-  "description": "Connect your signed-in AI chat tabs to your local Antigravity Studio app. No cookies or session credentials are exported.",
+  "description": "Connect your signed-in AI chat tabs to your local Gravity app. No cookies or session credentials are exported.",
   "permissions": ["scripting", "storage", "alarms"],
   "host_permissions": [
     "https://claude.ai/*",
@@ -15,6 +15,6 @@
     "http://127.0.0.1:4319/*"
   ],
   "background": { "service_worker": "background.mjs", "type": "module" },
-  "action": { "default_title": "Antigravity Studio Browser Connector", "default_popup": "popup.html" },
+  "action": { "default_title": "Gravity Browser Connector", "default_popup": "popup.html" },
   "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:4319" }
 }

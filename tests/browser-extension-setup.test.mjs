@@ -67,16 +67,16 @@ test('extension setup updates recognized old install folders and keeps a stable 
   t.after(async () => { assert.equal(path.dirname(temporary), path.resolve(os.tmpdir())); await fs.rm(temporary, { recursive: true, force: true }); });
   const source = fileURLToPath(new URL('../browser-extension', import.meta.url));
   const base = path.join(temporary, 'browser-extension');
-  for (const version of ['1.3.0', '1.4.1', '1.4.2']) {
+  for (const version of ['1.3.0', '1.4.1', '1.4.2', '1.5.0']) {
     const folder = path.join(base, version); await fs.mkdir(folder, { recursive: true });
-    await fs.writeFile(path.join(folder, 'manifest.json'), JSON.stringify({ name: 'Antigravity Studio Browser Connector', version: '1.0.0' }));
+    await fs.writeFile(path.join(folder, 'manifest.json'), JSON.stringify({ name: version === '1.5.0' ? 'Gravity Browser Connector' : 'Antigravity Studio Browser Connector', version: '1.0.0' }));
     await fs.writeFile(path.join(folder, 'background.mjs'), 'OLD EXTENSION');
   }
   const other = path.join(base, '2.0.0'); await fs.mkdir(other);
   const foreignManifest = JSON.stringify({ name: 'Unrelated extension', version: '2.0.0' });
   await fs.writeFile(path.join(other, 'manifest.json'), foreignManifest);
   const first = await prepareBrowserExtensionFolders(source, base);
-  assert.equal(first.path, path.join(base, 'current')); assert.equal(first.updatedPaths.length, 3);
+  assert.equal(first.path, path.join(base, 'current')); assert.equal(first.updatedPaths.length, 4);
   for (const folder of [first.path, ...first.updatedPaths]) {
     assert.deepEqual(await fs.readFile(path.join(folder, 'background.mjs')), await fs.readFile(path.join(source, 'background.mjs')));
     assert.deepEqual(await fs.readFile(path.join(folder, 'manifest.json')), await fs.readFile(path.join(source, 'manifest.json')));
@@ -84,6 +84,7 @@ test('extension setup updates recognized old install folders and keeps a stable 
   assert.equal(await fs.readFile(path.join(other, 'manifest.json'), 'utf8'), foreignManifest);
   const next = await prepareBrowserExtensionFolders(source, base);
   assert.equal(next.path, first.path, 'Installing a later desktop version does not change the Chrome install path');
+  assert.equal(next.updatedPaths.length, 4, 'Renamed Gravity folders remain recognized on the next upgrade');
 });
 
 test('extension copy refuses a redirected destination without changing its target', async t => {

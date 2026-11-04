@@ -17,7 +17,7 @@ else if (args.length !== 2 || args[0] !== '--config' || !args[1] || args[1].star
     service = await loadUniversalConfig(args[1]);
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
     const status = await service.start();
-    if (!stopping) console.log(`Antigravity Studio API: ${status.gateway.url}\n${status.providers.length} providers, ${status.bridges.length} bridge profiles. Clients use the configured gateway token.\nPress Ctrl+C to stop all processes started by this service.`);
+    if (!stopping) console.log(`Gravity API: ${status.gateway.url}\n${status.providers.length} providers, ${status.bridges.length} bridge profiles. Clients use the configured gateway token.\nPress Ctrl+C to stop all processes started by this service.`);
   } catch (error) {
     if (!stopping) { console.error(`Cannot start service: ${service ? service.redact(error.message) : error.message}`); process.exitCode = 1; }
     if (service) {

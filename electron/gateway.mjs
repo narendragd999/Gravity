@@ -63,7 +63,7 @@ export class Gateway {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     // No browser origins are trusted. Native clients authenticate with the token.
     if (req.headers.origin) { fail(res, 403, 'Browser cross-origin requests are disabled.'); return; }
-    if (url.pathname === '/health' && req.method === 'GET') { json(res, 200, { status: 'ok', service: 'antigravity-studio' }); return; }
+    if (url.pathname === '/health' && req.method === 'GET') { json(res, 200, { status: 'ok', service: 'gravity' }); return; }
     if (!authorized(req.headers.authorization, this.token)) { fail(res, 401, 'A valid gateway bearer token is required.'); return; }
     if (url.pathname === '/v1/models' && req.method === 'GET') {
       json(res, 200, { object: 'list', data: this.getProviders().flatMap(p => p.models.map(id => ({ id: `${p.id}/${id}`, object: 'model', created: 0, owned_by: p.name }))) }); return;

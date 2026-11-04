@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../electron/store.mjs';
 import { WorkspaceService } from '../electron/workspace.mjs';
 import { AgentRunner } from '../electron/agent.mjs';
+import { parseSiteResult } from '../browser-extension/core.mjs';
 
 const response = (content, calls = []) => ({ choices: [{ message: { role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) } }] });
 const call = (name, args, id = name) => ({ id, type: 'function', function: { name, arguments: JSON.stringify(args) } });
@@ -141,4 +142,24 @@ test('next user turn retains coherent previous tool exchanges and their actual r
   await f.start('Read note.txt'); await f.start('What did the file say?');
   assert.equal(f.store.conversation(f.conversation.id).status, 'idle');
   assert.equal(f.store.conversation(f.conversation.id).messages.at(-1).content, 'The file said a unique file value.');
+});
+
+
+test('browser folder request becomes an approval and creates both folders only after approval', async t => {
+  let step = 0;
+  const command = process.platform === 'win32' ? "New-Item -ItemType Directory -Path 'One','Two'" : "mkdir 'One' 'Two'";
+  const f = await fixture(t, async (_, body) => {
+    if (process.platform === 'win32') assert.match(body.messages[0].content, /Windows PowerShell 5.1/);
+    if (step++ === 0) return { choices: [{ message: parseSiteResult('```json\n' + JSON.stringify({ content: null, tool_calls: [{ id: 'folders', type: 'function', function: { name: 'run_command', arguments: { command } } }] }) + '\n```', body.tools) }] };
+    assert.ok(body.messages.some(m => m.role === 'tool' && m.tool_call_id === 'folders'));
+    return response('Created One and Two.');
+  });
+  const done = f.start('Create folders One and Two.');
+  const pending = await approval(f.runner);
+  await assert.rejects(fs.stat(path.join(f.project, 'One')), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(f.project, 'Two')), { code: 'ENOENT' });
+  f.runner.resolve(pending, true); await done;
+  assert.equal((await fs.stat(path.join(f.project, 'One'))).isDirectory(), true);
+  assert.equal((await fs.stat(path.join(f.project, 'Two'))).isDirectory(), true);
+  assert.equal(f.conversation.status, 'idle');
 });

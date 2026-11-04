@@ -42,7 +42,7 @@ export async function prepareBrowserExtensionFolders(source, base) {
     if (!manifestEntry?.isFile() || manifestEntry.isSymbolicLink()) continue;
     let manifest;
     try { manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')); } catch { continue; }
-    if (manifest.name !== 'Antigravity Studio Browser Connector') continue;
+    if (!['Gravity Browser Connector', 'Antigravity Studio Browser Connector'].includes(manifest.name)) continue;
     await copyBrowserExtension(source, directory);
     updatedPaths.push(directory);
   }

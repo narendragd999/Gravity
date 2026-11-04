@@ -12,7 +12,7 @@ const defaults = () => ({
     { id: 'gemini-local', name: 'Gemini Web2API', type: 'openai', baseUrl: 'http://127.0.0.1:8081/v1', models: ['gemini-3.6-flash'], defaultModel: 'gemini-3.6-flash' },
     { id: 'ollama', name: 'Ollama', type: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: [], defaultModel: '' }
   ],
-  settings: { theme: 'light', systemPrompt: '', maxSteps: 16, gatewayPort: 4318, gatewayToken: randomBytes(32).toString('hex'), gatewayAutoStart: false, bridgeExecutable: '', bridgeConfig: '', bridgePort: 8081 }
+  settings: { theme: 'light', uiScale: 110, systemPrompt: '', maxSteps: 16, gatewayPort: 4318, gatewayToken: randomBytes(32).toString('hex'), gatewayAutoStart: true, browserAutoStart: true, bridgesAutoStart: true, bridgeAutoStart: true, bridgeExecutable: '', bridgeConfig: '', bridgePort: 8081 }
 });
 
 export class Store {
@@ -40,7 +40,8 @@ export class Store {
     fs.renameSync(temporary, this.file);
   }
   publicState() {
-    return structuredClone({ ...this.data, conversations: this.data.conversations.map(({ apiHistory, ...c }) => c), providers: this.data.providers.map(p => {
+    const { encryptedBrowserPairing, ...data } = this.data;
+    return structuredClone({ ...data, conversations: this.data.conversations.map(({ apiHistory, ...c }) => c), providers: this.data.providers.map(p => {
       const { encryptedApiKey, encryptedHeaders, ...publicFields } = p;
       return { ...publicFields, hasApiKey: !!encryptedApiKey, headers: encryptedHeaders ? Object.fromEntries(Object.keys(this.decryptJSON(encryptedHeaders)).map(k => [k, '********'])) : {} };
     }), bridgeProfiles: this.data.bridgeProfiles.map(p => {
@@ -49,6 +50,32 @@ export class Store {
     }) });
   }
   decryptJSON(value) { return JSON.parse(this.decrypt(value)); }
+  browserPairing() {
+    if (!this.data.encryptedBrowserPairing) return null;
+    const pairing = this.decryptJSON(this.data.encryptedBrowserPairing);
+    this.validateBrowserPairing(pairing);
+    return pairing;
+  }
+  validateBrowserPairing(pairing) {
+    if (!pairing || !/^[a-p]{32}$/.test(pairing.extensionId || '') || typeof pairing.token !== 'string' || !/^[a-f0-9]{64}$/.test(pairing.token)) throw new Error('Saved browser pairing is invalid.');
+  }
+  saveBrowserPairing(pairing) {
+    this.validateBrowserPairing(pairing);
+    const previous = this.data.encryptedBrowserPairing;
+    this.data.encryptedBrowserPairing = this.encrypt(JSON.stringify(pairing));
+    try { this.save(); }
+    catch (error) {
+      if (previous === undefined) delete this.data.encryptedBrowserPairing;
+      else this.data.encryptedBrowserPairing = previous;
+      throw error;
+    }
+  }
+  clearBrowserPairing() {
+    const previous = this.data.encryptedBrowserPairing;
+    delete this.data.encryptedBrowserPairing;
+    try { this.save(); }
+    catch (error) { if (previous !== undefined) this.data.encryptedBrowserPairing = previous; throw error; }
+  }
   provider(id) {
     const p = this.data.providers.find(x => x.id === id);
     if (!p) throw new Error('Choose a valid provider in Settings.');
@@ -110,8 +137,10 @@ export class Store {
   }
   updateSettings(input) {
     const next = { ...this.data.settings };
-    for (const key of ['theme', 'systemPrompt', 'maxSteps', 'gatewayPort', 'gatewayToken', 'gatewayAutoStart', 'bridgeExecutable', 'bridgeConfig', 'bridgePort']) if (input[key] !== undefined) next[key] = input[key];
+    for (const key of ['theme', 'uiScale', 'systemPrompt', 'maxSteps', 'gatewayPort', 'gatewayToken', 'gatewayAutoStart', 'browserAutoStart', 'bridgesAutoStart', 'bridgeAutoStart', 'bridgeExecutable', 'bridgeConfig', 'bridgePort']) if (input[key] !== undefined) next[key] = input[key];
     if (!['light', 'dark'].includes(next.theme)) throw new Error('Invalid theme.');
+    if (![100, 110, 125].includes(next.uiScale)) throw new Error('Text size must be 100, 110, or 125 percent.');
+    for (const key of ['gatewayAutoStart', 'browserAutoStart', 'bridgesAutoStart', 'bridgeAutoStart']) if (typeof next[key] !== 'boolean') throw new Error(`${key} must be true or false.`);
     for (const key of ['gatewayPort', 'bridgePort']) if (!Number.isInteger(next[key]) || next[key] < 1024 || next[key] > 65535) throw new Error('Port must be an integer from 1024 to 65535.');
     if (next.gatewayPort === next.bridgePort) throw new Error('Gateway and bridge need different ports.');
     if (!Number.isInteger(next.maxSteps) || next.maxSteps < 1 || next.maxSteps > 64) throw new Error('Agent step limit must be between 1 and 64.');

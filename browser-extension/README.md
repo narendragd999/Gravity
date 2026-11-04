@@ -1,4 +1,4 @@
-# Antigravity Studio Browser Connector
+# Gravity Browser Connector
 
 Load this folder as an unpacked Chrome Manifest V3 extension. No build step or downloaded JavaScript is required. See `help.html` for setup and privacy details.
 

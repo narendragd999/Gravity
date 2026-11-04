@@ -9,7 +9,7 @@ import { complete } from '../electron/providers.mjs';
 const extensionId = 'abcdefghijklmnopabcdefghijklmnop';
 const otherId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const origin = `chrome-extension://${extensionId}`;
-const clientHeaders = { 'X-Connector-Protocol': String(CONNECTOR_PROTOCOL), 'X-Connector-Version': '1.0.2' };
+const clientHeaders = { 'X-Connector-Protocol': String(CONNECTOR_PROTOCOL), 'X-Connector-Version': '1.0.5' };
 const input = { model: 'claude-web', messages: [{ role: 'user', content: 'Hello from the test client.' }] };
 const tools = [{ type: 'function', function: { name: 'read_file', description: 'Read a selected workspace file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }];
 
@@ -149,7 +149,7 @@ test('legacy extensions are refused before pairing with visible upgrade guidance
 
 test('extension compatibility uses the protocol instead of an exact release version', async t => {
   const f = await fixture(t), nonce = randomBytes(32).toString('hex');
-  for (const protocol of ['1', '3', 'invalid']) {
+  for (const protocol of ['1', '2', '4', 'invalid']) {
     const response = await f.extension('/connector/pair', { extensionId, nonce }, { token: null, headers: { 'X-Connector-Protocol': protocol } });
     assert.equal(response.status, 426);
     assert.equal(f.connector.status().pendingPairings.length, 0);
@@ -165,7 +165,7 @@ test('a stale paired worker cannot receive queued prompts and a compatible heart
   const pending = f.request('/v1/chat/completions', input);
   await until(() => f.connector.jobs.size === 1);
   const queued = [...f.connector.jobs.values()][0];
-  const staleHeaders = { 'X-Connector-Extension-ID': extensionId, 'X-Connector-Version': '1.0.0' };
+  const staleHeaders = { 'X-Connector-Extension-ID': extensionId, 'X-Connector-Version': '1.0.4', 'X-Connector-Protocol': '2' };
   const poll = await f.request('/connector/jobs', undefined, { token: f.extensionToken, headers: staleHeaders });
   assert.equal(poll.status, 426); assert.equal(queued.delivered, false);
   assert.equal((await pending).status, 503); assert.equal(f.connector.jobs.size, 0);
@@ -371,4 +371,79 @@ test('overlapping starts share a listener and stopping during provider setup doe
   await connector.stop(); release();
   assert.match((await first).error.message, /cancelled/); assert.match((await second).error.message, /cancelled/);
   assert.equal(server.listening, false); assert.equal(connector.status().running, false);
+});
+
+
+test('raw website action transcripts fail without claiming that the current extension needs updating', async t => {
+  const f = await fixture(t); await f.pair(); await f.heartbeat();
+  const pending = f.request('/v1/chat/completions', { ...input, tools });
+  const job = await f.nextJob();
+  const rejected = await f.extension('/connector/results', { id: job.id, siteId: job.siteId, rawText: 'Claude responded: {"content":null,"toolcalls":[]}\n\n{“content”:null,”tool_calls”:[]}\n\njust now' });
+  assert.equal(rejected.status, 422);
+  const response = await pending;
+  assert.equal(response.status, 502);
+  const message = (await response.json()).error.message;
+  assert.match(message, /No tool call was accepted/);
+  assert.doesNotMatch(message, /extension.*updat|reload/i);
+  assert.equal(f.connector.jobs.size, 0);
+});
+
+test('desktop decodes raw greetings once and preserves quoted action examples as text', async t => {
+  const f = await fixture(t); await f.pair(); await f.heartbeat();
+  const greeting = 'Hello! I’m Gravity, a coding agent working in your selected project folder.';
+  const example = '{"content":null,"tool_calls":[{"id":"example","type":"function","function":{"name":"read_file","arguments":{"path":"README.md"}}}]}';
+  for (const [rawText, expected] of [
+    [JSON.stringify({ content: greeting, tool_calls: [] }), greeting],
+    ['{“content”:“' + greeting + '”,“tool_calls”:[]}', greeting],
+    ['```json\n{“tool_calls”:[],“content”:“' + greeting + '”}\n```', greeting],
+    [JSON.stringify({ content: example, tool_calls: [] }), example],
+    ['A normal final answer.', 'A normal final answer.'],
+  ]) {
+    const pending = f.request('/v1/chat/completions', { ...input, tools });
+    const job = await f.nextJob();
+    const accepted = await f.extension('/connector/results', { id: job.id, siteId: job.siteId, rawText });
+    assert.equal(accepted.status, 200);
+    const response = await pending; assert.equal(response.status, 200);
+    const completion = await response.json();
+    assert.deepEqual(completion.choices[0].message, { role: 'assistant', content: expected });
+    assert.equal(completion.choices[0].finish_reason, 'stop');
+  }
+  const pending = f.request('/v1/chat/completions', { ...input, tools });
+  const job = await f.nextJob();
+  await f.extension('/connector/results', { id: job.id, siteId: job.siteId, result: { content: example } });
+  assert.deepEqual((await (await pending).json()).choices[0].message, { role: 'assistant', content: example });
+});
+
+test('raw tool calls are validated and only strict complete envelopes become actions', async t => {
+  const f = await fixture(t); await f.pair(); await f.heartbeat();
+  const call = { id: 'read', type: 'function', function: { name: 'read_file', arguments: { path: 'README.md' } } };
+  const pending = complete({ type: 'openai', baseUrl: f.connector.status().url, apiKey: f.apiToken }, { ...input, tools, tool_choice: 'required', stream: true });
+  const job = await f.nextJob();
+  assert.equal((await f.extension('/connector/results', { id: job.id, siteId: job.siteId, rawText: '```json\n' + JSON.stringify({ content: null, tool_calls: [call] }) + '\n```' })).status, 200);
+  assert.deepEqual((await pending).choices[0].message.tool_calls, [{ ...call, function: { ...call.function, arguments: JSON.stringify(call.function.arguments) } }]);
+  for (const [rawText, choice] of [
+    ['{“content”:null,“tool_calls”:[{“function”:{“name”:“read_file”}}]}', 'auto'],
+    [JSON.stringify({ content: null, tool_calls: [{ ...call, function: { name: 'run_command', arguments: {} } }] }), 'auto'],
+    ['{“content”:“Hello”,“tool_calls”:[]}', 'required'],
+    [42, 'auto'],
+    ['x'.repeat(100001), 'auto'],
+  ]) {
+    const request = f.request('/v1/chat/completions', { ...input, tools, tool_choice: choice });
+    const next = await f.nextJob();
+    const rejected = await f.extension('/connector/results', { id: next.id, siteId: next.siteId, rawText });
+    assert.ok([400, 422].includes(rejected.status));
+    assert.equal((await request).status, 502);
+    assert.equal(f.connector.jobs.size, 0);
+  }
+});
+
+test('connector result payload variants are mutually exclusive', async t => {
+  const f = await fixture(t); await f.pair(); await f.heartbeat();
+  const pending = f.request('/v1/chat/completions', input), job = await f.nextJob();
+  for (const payload of [{}, { rawText: 'Hello', result: { content: 'Hello' } }, { rawText: null, error: 'Failed' }, { result: null, error: null }]) {
+    assert.equal((await f.extension('/connector/results', { id: job.id, siteId: job.siteId, ...payload })).status, 400);
+    assert.equal(f.connector.jobs.size, 1);
+  }
+  await f.extension('/connector/results', { id: job.id, siteId: job.siteId, rawText: 'Hello' });
+  assert.equal((await pending).status, 200);
 });

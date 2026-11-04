@@ -9,14 +9,17 @@ export class GeminiBridge {
     this.directory = directory; this.onChange = onChange; this.onReady = onReady;
     this.child = null; this.controller = null; this.starting = false; this.info = { running: false, port: 8081, logs: [] };
   }
-  status() { return { ...this.info, logs: [...this.info.logs] }; }
+  status() { return { ...this.info, starting: this.starting, logs: [...this.info.logs] }; }
   async start({ executable, config, port }) {
     if (this.child || this.starting) throw new Error('The managed bridge is already starting or running.');
     this.starting = true;
+    delete this.info.error;
     this.controller = new AbortController();
-    try { return await this.launch({ executable, config, port }, this.controller); }
-    catch (error) { if (!this.child) await fs.unlink(path.join(this.directory, 'bridge-runtime.json')).catch(() => {}); throw error; }
-    finally { this.starting = false; }
+    this.onChange();
+    try { await this.launch({ executable, config, port }, this.controller); }
+    catch (error) { this.info.error = error.message; if (!this.child) await fs.unlink(path.join(this.directory, 'bridge-runtime.json')).catch(() => {}); throw error; }
+    finally { this.starting = false; this.onChange(); }
+    return this.status();
   }
   async launch({ executable, config, port }, controller) {
     const signal = controller.signal;

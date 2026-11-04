@@ -10,6 +10,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePackage = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const { version } = sourcePackage;
 assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/, 'Invalid artifact version');
+assert.equal(sourcePackage.build.productName, 'Gravity', 'Distribution product name must be Gravity');
 // Resolve through electron-builder so this works with pnpm's isolated dependencies.
 const builderRequire = createRequire(import.meta.resolve('electron-builder'));
 const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'));
@@ -57,6 +58,15 @@ for (const relative of expected) {
 // Electron-builder intentionally removes build-only metadata from package.json.
 const { scripts, devDependencies, build, ...expectedPackage } = sourcePackage;
 assert.deepEqual(JSON.parse(asar.extractFile(archive, 'package.json')), expectedPackage, 'Packaged package.json differs');
+// The portable executable wraps this directory, so verify its bundled runtime
+// as well as app.asar. A launch must not depend on system Node or a source tree.
+for (const relative of ['Gravity.exe', 'icudtl.dat', 'resources.pak', 'LICENSE.electron.txt', 'LICENSES.chromium.html']) {
+  regularFile(`release/win-unpacked/${relative}`);
+}
+const extensionManifest = JSON.parse(asar.extractFile(archive, path.normalize('browser-extension/manifest.json')));
+assert.equal(extensionManifest.name, 'Gravity Browser Connector');
+assert.ok(packaged.includes(`browser-extension/${extensionManifest.background.service_worker}`), 'Bundled extension worker is missing');
+assert.ok(packaged.includes(`browser-extension/${extensionManifest.action.default_popup}`), 'Bundled extension popup is missing');
 
 // Verification must not silently replace an outdated source archive.
 const pythonCandidates = process.env.PYTHON ? [process.env.PYTHON] : ['python', 'python3'];
@@ -70,7 +80,7 @@ for (const python of pythonCandidates) {
 if (verification?.error) throw verification.error;
 assert.equal(verification?.status, 0, 'Source ZIP verification failed (Python 3 is required)');
 
-const targets = [`Antigravity-Studio-${version}-x64.exe`, `Antigravity-Studio-${version}-source.zip`];
+const targets = [`Gravity-${version}-x64.exe`, `Gravity-${version}-source.zip`];
 const hashes = targets.map(name => {
   const filename = regularFile(`release/${name}`);
   return `${createHash('sha256').update(fs.readFileSync(filename)).digest('hex')}  ${name}`;

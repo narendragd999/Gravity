@@ -1,8 +1,8 @@
-import { CONNECTOR_ORIGIN, SITES, siteById, siteMatchesUrl, formatJobPrompt, parseSiteResult } from './core.mjs';
+import { CONNECTOR_ORIGIN, SITES, siteById, siteMatchesUrl, formatJobPrompt } from './core.mjs';
 import { pageBridge } from './dom.mjs';
 
 // Keep this aligned with the desktop's browser connector contract.
-const CONNECTOR_PROTOCOL = 2;
+const CONNECTOR_PROTOCOL = 3;
 const extensionVersion = chrome.runtime.getManifest().version;
 let auth = null, pendingPair = null, initialized = false, initialization, looping = false, lastScan = 0, lastHeartbeat = 0;
 let connection = 'disconnected', lastError = '';
@@ -50,12 +50,12 @@ async function persistConnection() {
 async function rpc(path, body, { paired = true, timeout = 25000 } = {}) {
   const currentToken = auth?.token, generation = authGeneration;
   const ensureCurrent = () => { if (generation !== authGeneration || (paired && auth?.token !== currentToken)) throw new Error('The connector connection changed while this request was in flight.'); };
-  if (paired && !currentToken) throw new Error('Connect this extension to Antigravity Studio first.');
+  if (paired && !currentToken) throw new Error('Connect this extension to Gravity first.');
   let response;
   try {
     response = await fetch(`${CONNECTOR_ORIGIN}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-connector-extension-id': chrome.runtime.id, 'x-connector-protocol': String(CONNECTOR_PROTOCOL), 'x-connector-version': extensionVersion, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(paired ? { authorization: `Bearer ${currentToken}` } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), credentials: 'omit', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(timeout) });
-  } catch { throw new Error('Cannot reach Antigravity Studio at 127.0.0.1:4319. Start its browser connector and retry.'); }
+  } catch { throw new Error('Cannot reach Gravity at 127.0.0.1:4319. Start its browser connector and retry.'); }
   ensureCurrent();
   let data; try { data = await response.json(); } catch { throw new Error('The local connector returned an invalid response.'); }
   ensureCurrent();
@@ -216,8 +216,7 @@ async function runJob(raw, generation = authGeneration) {
     if (job.cancelled || generation !== authGeneration) return;
     const response = values[0]?.result;
     if (!response?.text) throw new Error('The website did not return a completed assistant message.');
-    const result = parseSiteResult(response.text, raw.tools, raw.tool_choice);
-    await rpc('/connector/results', { id: job.id, siteId: job.siteId, result }); success = true;
+    await rpc('/connector/results', { id: job.id, siteId: job.siteId, rawText: response.text }); success = true;
   } catch (error) {
     if (!job?.cancelled && generation === authGeneration && auth && typeof raw?.id === 'string' && siteById(raw.siteId)) {
       try { await rpc('/connector/results', { id: raw.id, siteId: raw.siteId, error: cleanError(error) }); } catch { /* App may already have cancelled this request. */ }

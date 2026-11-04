@@ -1,4 +1,4 @@
-Dependency notices for Antigravity Studio, including build-time tooling.
+Dependency notices for Gravity, including build-time tooling.
 
 ========================================================================
 @babel/code-frame@7.29.7

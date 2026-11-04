@@ -1,6 +1,8 @@
 # Third-party components and references
 
-This independently implemented desktop application uses Electron (MIT; Chromium and other bundled components have their own notices), React/React DOM (MIT), Monaco Editor (MIT), @monaco-editor/react (MIT), Lucide (ISC), react-markdown (MIT), and remark-gfm (MIT). Build tools include Vite, TypeScript, and electron-builder. The dependency versions are pinned in pnpm-lock.yaml. Electron's LICENSE and LICENSES.chromium.html accompany packaged runtime files; collected dependency notices are included in THIRD_PARTY_LICENSES.txt.
+This independently implemented desktop application uses Electron (MIT; Chromium and other bundled components have their own notices), React/React DOM (MIT), Monaco Editor (MIT), @monaco-editor/react (MIT), Lucide (ISC), react-markdown (MIT), and remark-gfm (MIT). Build tools include Vite, TypeScript, and electron-builder. The npm dependency versions are pinned in package-lock.json. Electron's LICENSE and LICENSES.chromium.html accompany packaged runtime files; collected dependency notices are included in THIRD_PARTY_LICENSES.txt.
+
+Optional standalone bridge source snapshots are in `bridges/`, with provenance and modifications documented in [bridges/README.md](bridges/README.md). Gemini Web2API includes its upstream MIT license and copyright notice. Claude Web2API's upstream README declares MIT but its inspected tree supplies no LICENSE file; this repository does not invent a license grant or relicense that source. The bridge sources are separate from the desktop executable and contain no user sessions or credentials.
 
 Research references, not embedded Google source:
 

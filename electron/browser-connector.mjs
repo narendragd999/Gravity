@@ -1,9 +1,10 @@
 import http from 'node:http';
+import { parseSiteResult } from '../browser-extension/core.mjs';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
-// Protocol 2 requires composer readiness and normalized structured replies.
-export const CONNECTOR_PROTOCOL = 2;
-const EXTENSION_UPGRADE_MESSAGE = 'The Chrome extension is outdated or incompatible. In Settings → Web2API bridges, click Open extension setup, then load the prepared folder in Chrome or reload the extension if it already uses that folder. Connect to app and approve it again if prompted.';
+// Protocol 3 sends visible website text for one authoritative desktop parse.
+export const CONNECTOR_PROTOCOL = 3;
+const EXTENSION_UPGRADE_MESSAGE = 'The Chrome extension is outdated or incompatible. In Settings → Browser Connector, click Open extension setup, then load the prepared folder in Chrome or reload the extension if it already uses that folder. Connect to app and approve it again if prompted.';
 
 export const BROWSER_SITES = Object.freeze([
   { id: 'claude', model: 'claude-web', name: 'Claude' },
@@ -197,6 +198,16 @@ export class BrowserConnector {
         ]);
       } finally { controller.signal.removeEventListener('abort', abort); }
       controller.signal.throwIfAborted();
+      try {
+        const saved = this.store?.browserPairing?.();
+        if (saved) {
+          this.pair = { extensionId: saved.extensionId, token: saved.token, lastHeartbeat: Date.now() };
+          // Saved trust survives restarts; runtime version/compatibility must
+          // come from the worker that is actually running now.
+        }
+      } catch {
+        this.info.error = 'The saved Chrome connection could not be restored. Connect the extension and approve it again.';
+      }
       this.info.running = true;
       this.timer = setInterval(() => this.sweep(), Math.max(10, Math.min(1000, Math.floor(this.heartbeatTimeoutMs / 2), Math.floor(this.pairingTtlMs / 2))));
       this.timer.unref?.();
@@ -237,6 +248,7 @@ export class BrowserConnector {
   }
 
   revoke() {
+    this.store?.clearBrowserPairing?.();
     this.cancelAll('Chrome extension pairing was revoked.', 503);
     this.resetPairing(); delete this.info.error; this.changed(); return this.status();
   }
@@ -245,8 +257,11 @@ export class BrowserConnector {
     this.sweep();
     const pairing = this.pending.get(id);
     if (!pairing || pairing.approved) throw new Error('This pairing request expired or was already handled.');
-    if (this.pair) this.resetPairing();
     const token = randomBytes(32).toString('hex');
+    // Persist only explicitly approved trust, encrypted with the current user's
+    // OS credential store. No pending approval or website session is saved.
+    this.store?.saveBrowserPairing?.({ extensionId: pairing.extensionId, token, extension: pairing.extension });
+    if (this.pair) this.resetPairing();
     pairing.approved = true;
     this.pair = { extensionId: pairing.extensionId, token, lastHeartbeat: Date.now() };
     this.info.extension = { ...pairing.extension };
@@ -407,18 +422,27 @@ export class BrowserConnector {
         this.changed(); json(res, 200, { ok: true, cancelledJobIds: [...this.cancelled.keys()] }); return;
       }
       if (route === '/connector/results' && req.method === 'POST') {
-        const body = await bodyFor(req); stillPaired(); onlyKeys(body, ['id', 'siteId', 'result', 'error']);
+        const body = await bodyFor(req); stillPaired(); onlyKeys(body, ['id', 'siteId', 'rawText', 'result', 'error']);
         const job = this.jobs.get(body.id);
         if (!job) throw failure(404, 'Job is no longer active. Discard its result.');
         if (!job.delivered || body.siteId !== job.payload.siteId) throw failure(409, 'Result does not match a delivered job for this site.');
-        if ((body.result !== undefined) === (body.error !== undefined)) throw failure(400, 'Provide exactly one result or error.');
+        if (['rawText', 'result', 'error'].filter(key => Object.hasOwn(body, key)).length !== 1) throw failure(400, 'Provide exactly one rawText, result, or error.');
         if (body.error !== undefined) {
           const message = this.redact(text(body.error, 'Website error', 2000));
           this.finish(job, null, failure(502, message)); json(res, 200, { ok: true }); return;
         }
         let result;
-        try { result = normalizeResult(body.result, job); }
-        catch (error) { this.finish(job, null, failure(502, `Invalid website response: ${error.message}`)); throw error; }
+        try {
+          // Decode website output once. Content in an already decoded reply may
+          // contain quoted examples and must never be promoted into tool calls.
+          const decoded = Object.hasOwn(body, 'rawText')
+            ? parseSiteResult(text(body.rawText, 'Website response'), job.payload.tools, job.payload.tool_choice)
+            : body.result;
+          result = normalizeResult(decoded, job);
+        } catch (error) {
+          this.finish(job, null, failure(502, `Invalid website response: ${error.message}`));
+          throw failure(error.status || 422, error.message);
+        }
         this.finish(job, result); json(res, 200, { ok: true }); return;
       }
       throw failure(404, 'Unknown connector endpoint.');

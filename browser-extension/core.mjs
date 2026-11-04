@@ -68,26 +68,128 @@ export function formatJobPrompt(job) {
   if (tools.length && job.tool_choice !== 'none') {
     const required = typeof job.tool_choice === 'object' ? job.tool_choice?.function?.name : null;
     if (required && !tools.some(tool => tool.function.name === required)) throw new Error('Requested tool is not available.');
-    prompt += `\n\nAVAILABLE APPLICATION TOOLS\n${JSON.stringify(tools.map(tool => tool.function))}\n\nThese tools are executed by the local application after its own checks and approvals, never by this website. Do not claim execution before receiving a tool result.\n\nRESPONSE FORMAT FOR THIS TURN\nReturn exactly one raw JSON object as your entire response. Start with { and end with }. Do not wrap it in a Markdown code block, add a language label, or write any text before or after it. This format also applies to progress updates requested earlier in the conversation: put any explanation or progress text inside the content field.\nTo request tools, use this shape: {"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"allowed_tool_name","arguments":{}}}]}. Replace allowed_tool_name with a declared tool name and supply arguments matching its parameter schema. Use a unique id for every call. The arguments field is a JSON object, not JavaScript or a shell command string. Request only the next actions needed, then wait for their tool results.\nWhen no tool is needed, use {"content":"Your answer to the user.","tool_calls":[]}. Never present a tool call as a quoted example or surround it with narrative.${required ? ` The requested next tool is ${required}.` : job.tool_choice === 'required' ? ' A tool call is required for this response.' : ''}`;
+    prompt += `\n\nAVAILABLE APPLICATION TOOLS\n${JSON.stringify(tools.map(tool => tool.function))}\n\nThese tools are executed by the local application after its own checks and approvals, never by this website. Do not claim execution before receiving a tool result.\n\nRESPONSE FORMAT FOR THIS TURN\nReturn exactly one fenced JSON code block as your entire response: open with three backticks followed by json, put one valid JSON object on the following line, then close with three backticks. This preserves straight JSON quotes and underscores instead of website typography. Do not write any text before or after the code block. Use the exact field name "tool_calls", including the underscore. This format also applies to progress updates requested earlier in the conversation: put any explanation or progress text inside the content field.\nTo request tools, use this shape: {"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"allowed_tool_name","arguments":{}}}]}. Replace allowed_tool_name with a declared tool name and supply arguments matching its parameter schema. Use a unique id for every call. The arguments field is a JSON object, not JavaScript or a shell command string. Request only the next actions needed, then wait for their tool results.\nWhen no tool is needed, use {"content":"Your answer to the user.","tool_calls":[]}. Never present a tool call as a quoted example or surround it with narrative.${required ? ` The requested next tool is ${required}.` : job.tool_choice === 'required' ? ' A tool call is required for this response.' : ''}`;
   }
   if (prompt.length > 120000) throw new Error('Conversation is too large for the browser connector (120,000 characters). Start a new conversation or use a direct API.');
   return prompt;
+}
+
+// Detection is deliberately more tolerant than parsing. Malformed action text
+// must be rejected, never repaired into an executable command.
+export function containsToolCallMarkup(text) {
+  return typeof text === 'string' && /["'“”‘’]tool[_ -]?calls["'“”‘’]\s*:/i.test(text);
+}
+
+function responseEnvelopeBody(text) {
+  const trimmed = text.trim();
+  const fence = /^```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(trimmed);
+  return fence ? fence[1].trim() : trimmed.startsWith('{') ? trimmed : '';
+}
+
+function parseCanonicalEnvelope(body) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { return null; }
+  // JSON.parse uses the last duplicate value. Inspect only top-level keys in
+  // valid JSON, skipping complete strings and nested values before accepting it.
+  const keys = new Set();
+  let depth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === '"') {
+      let end = index + 1;
+      while (end < body.length && body[end] !== '"') end += body[end] === '\\' ? 2 : 1;
+      if (depth === 1) {
+        let next = end + 1;
+        while (/\s/.test(body[next] || '') && next < body.length) next += 1;
+        if (body[next] === ':') {
+          const key = JSON.parse(body.slice(index, end + 1));
+          if (keys.has(key)) return { payload, duplicateKeys: true };
+          keys.add(key);
+        }
+      }
+      index = end;
+    } else if (character === '{' || character === '[') depth += 1;
+    else if (character === '}' || character === ']') depth -= 1;
+  }
+  return { payload, duplicateKeys: false };
+}
+
+// Website typography can replace JSON delimiters with smart quotes. Recover
+// only a complete, text-only envelope; never repair a request to run tools.
+export function recoverTextOnlyEnvelope(text) {
+  if (typeof text !== 'string') return null;
+  const body = responseEnvelopeBody(text);
+  return recoverTextOnlyBody(body, parseCanonicalEnvelope(body));
+}
+
+function recoverTextOnlyBody(body, canonical) {
+  if (!body) return null;
+  if (canonical) {
+    if (canonical.duplicateKeys) return null;
+    const { payload } = canonical;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload) && Object.keys(payload).length === 2 && typeof payload.content === 'string' && payload.content.trim() && Array.isArray(payload.tool_calls) && !payload.tool_calls.length) {
+      return { role: 'assistant', content: payload.content };
+    }
+    return null;
+  }
+
+  const contentFirst = /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*,\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*\}$/.exec(body);
+  const toolsFirst = contentFirst ? null : /^\{\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*,\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
+  const match = contentFirst || toolsFirst;
+  if (!match) return null;
+  const contentIndex = contentFirst ? 4 : 6;
+  if (!match.some((part, index) => index > 0 && index !== contentIndex && /[“”]/.test(part))) return null;
+  const raw = match[contentIndex];
+  const escapes = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+  let content = '', possibleExtraKey = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character.charCodeAt(0) < 0x20) return null;
+    if (character === '\\') {
+      const escape = raw[++index];
+      if (escape === 'u') {
+        const hex = raw.slice(index + 1, index + 5);
+        if (!/^[0-9a-f]{4}$/i.test(hex)) return null;
+        content += String.fromCharCode(parseInt(hex, 16));
+        index += 4;
+      } else if (Object.hasOwn(escapes, escape)) content += escapes[escape];
+      else return null;
+    } else {
+      // A second property could otherwise be swallowed by the content capture.
+      // Ambiguous smart-quote syntax must not hide extra or duplicate fields.
+      if (/["'“”‘’]/.test(character)) {
+        const afterQuote = raw.slice(index + 1);
+        if (possibleExtraKey && /^\s*:/.test(afterQuote)) return null;
+        if (/["“”]/.test(character)) {
+          if (/^\s*,\s*["'“”‘’]/.test(afterQuote)) possibleExtraKey = true;
+          if (/^\s*,\s*[A-Za-z_$][\w$-]*\s*:/.test(afterQuote)) return null;
+        }
+      }
+      content += character;
+    }
+  }
+  return content.trim() ? { role: 'assistant', content } : null;
 }
 
 export function parseSiteResult(text, tools = [], toolChoice) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('The website returned no assistant text.');
   if (text.length > 200000) throw new Error('The website response exceeded the 200,000-character limit.');
   if (!tools.length || toolChoice === 'none') return { role: 'assistant', content: text };
-  const trimmed = text.trim();
-  const fence = /^```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(trimmed);
-  const body = fence ? fence[1].trim() : trimmed.startsWith('{') ? trimmed : '';
+  const body = responseEnvelopeBody(text);
+  const canonical = parseCanonicalEnvelope(body);
+  if (canonical?.duplicateKeys) throw new Error('The website returned duplicate top-level fields in its tool-call JSON. No tool call was accepted.');
+  const recovered = recoverTextOnlyBody(body, canonical);
+  if (recovered) {
+    if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website returned no required tool call.');
+    return recovered;
+  }
   let payload;
   if (/"tool_calls"\s*:/.test(body)) {
-    try { payload = JSON.parse(body); }
-    catch { throw new Error('The website returned malformed tool-call JSON. No tool call was accepted. Retry or use a direct API with native tools.'); }
+    if (!canonical) throw new Error('The website returned malformed tool-call JSON. No tool call was accepted. Retry or use a direct API with native tools.');
+    payload = canonical.payload;
   }
   if (!payload) {
-    if (/"tool_calls"\s*:/.test(text)) throw new Error('The website mixed tool-call JSON with other text. Tool calls must be the entire response as one JSON object or fenced block; put explanations inside its content field. No tool call was accepted from this response. Retry from the app, or use a provider with native tool support.');
+    if (containsToolCallMarkup(text)) throw new Error('The website mixed tool-call JSON with other text. Tool calls must be the entire response as one JSON object or fenced block; put explanations inside its content field. No tool call was accepted from this response. Retry from the app, or use a provider with native tool support.');
     if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website did not return the requested structured tool call.');
     return { role: 'assistant', content: text };
   }

@@ -1,6 +1,6 @@
 const byId = id => document.getElementById(id);
 let busy = false;
-const labels = { disconnected: 'Not connected', connecting: 'Connecting to app…', approval: 'Approve in Antigravity Studio', connected: 'Connected to desktop app', offline: 'Desktop app is unavailable' };
+const labels = { disconnected: 'Not connected', connecting: 'Connecting to app…', approval: 'Approve in Gravity', connected: 'Connected to desktop app', offline: 'Desktop app is unavailable' };
 function show(state) {
   byId('status').textContent = labels[state.connection] || state.connection;
   byId('dot').className = `dot ${state.connection}`;

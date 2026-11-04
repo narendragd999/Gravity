@@ -9,6 +9,8 @@ async function runSmoke() {
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-desktop-smoke-'));
 process.env.ANTIGRAVITY_DATA_DIR = path.join(temporary, 'settings');
 process.env.ANTIGRAVITY_TEST_CONNECTOR_PORT = '0';
+process.env.GRAVITY_TEST_GATEWAY_PORT = '0';
+for (const key of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) delete process.env[key];
 delete process.env.ANTIGRAVITY_DEV_URL;
 const fixtureRequests = [];
 const mock = http.createServer(async (req, res) => {
@@ -45,6 +47,7 @@ try {
   const click = async selector => {
     await waitFor(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`, `Enabled control exists: ${selector}`);
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   };
   const setValue = async (selector, value) => {
     await waitFor(`!!document.querySelector(${JSON.stringify(selector)})`, `Form field exists: ${selector}`);
@@ -52,7 +55,35 @@ try {
   };
   const permissionIs = label => `document.querySelector('[data-testid="permissions-trigger"]')?.getAttribute('aria-label') === ${JSON.stringify(`Action permissions: ${label}`)}`;
   await waitFor(permissionIs('Ask for approval'), 'Blank conversations default to Ask for approval');
+  await waitFor(`window.desktop.invoke('state:get').then(s => s.gateway.running && s.browserConnector.running)`, 'API and browser connector start automatically');
   const state = await invoke('state:get'); assert.equal(state.settings.theme, 'light');
+  assert.equal(state.settings.uiScale, 110); assert.equal(state.settings.gatewayAutoStart, true); assert.equal(state.settings.browserAutoStart, true);
+  assert.equal(await evaluate('document.title'), 'Gravity');
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('.composer textarea')).fontSize) >= 15`), 'Default composer text is comfortably readable');
+  const output = path.resolve('artifacts'); await fs.mkdir(output, { recursive: true });
+  win.webContents.setBackgroundThrottling(false); win.show(); win.focus(); await pause(300);
+  await click('[data-testid="get-started"]');
+  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Get started');
+  assert.equal(await evaluate(`document.querySelectorAll('.setup-choice-grid > button').length`), 2, 'First setup offers two clear connection choices');
+  assert.match(await evaluate(`document.querySelector('.settings-nav').textContent`), /Browser Connector.*Models & providers.*Web2API Bridges.*API.*Appearance/);
+  await pause(200); await fs.writeFile(path.join(output, 'gravity-get-started.png'), (await win.webContents.capturePage()).toPNG());
+  await click('[data-testid="settings-general-tab"]');
+  await click('[data-testid="text-size-125"]');
+  await waitFor(`document.querySelector('[data-testid="text-size-125"]').getAttribute('aria-pressed') === 'true'`, 'Text size saves immediately');
+  assert.equal((await invoke('state:get')).settings.uiScale, 125);
+  assert.ok(await evaluate(`parseFloat(getComputedStyle(document.querySelector('.composer textarea')).fontSize) >= 17`), 'Changing text size updates the workspace');
+  win.setSize(980, 640); await pause(250);
+  assert.ok(await evaluate(`(() => { const body = document.querySelector('.settings-body'); return body.scrollWidth <= body.clientWidth + 2; })()`), 'Large-text settings fit the minimum window width');
+  await fs.writeFile(path.join(output, 'gravity-large-text.png'), (await win.webContents.capturePage()).toPNG());
+  await click('[data-testid="text-size-110"]');
+  await waitFor(`window.desktop.invoke('state:get').then(s => s.settings.uiScale === 110)`, 'Recommended text size restores');
+  win.setSize(1450, 960); await pause(200);
+  await click('[data-testid="settings-gateway-tab"]');
+  assert.ok(await evaluate(`!document.querySelector('[data-testid="browser-setup"]')`), 'API settings are separate from Browser Connector');
+  await pause(250);
+  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'API');
+  await fs.writeFile(path.join(output, 'gravity-api.png'), (await win.webContents.capturePage()).toPNG());
+  await click('[aria-label="Close settings"]');
   const provider = await invoke('provider:save', { name: 'Local smoke fixture', type: 'openai', baseUrl: `http://127.0.0.1:${mock.address().port}/v1`, apiKey: 'smoke-secret-never-store-plain', models: ['smoke-model'], defaultModel: 'smoke-model' });
   assert.equal(provider.hasApiKey, true); assert.equal(provider.apiKey, undefined);
   const stored = await fs.readFile(path.join(temporary, 'settings/state.json'), 'utf8'); assert.ok(!stored.includes('smoke-secret-never-store-plain'));
@@ -78,12 +109,13 @@ try {
   await new Promise(resolve => portProbe.listen(0, '127.0.0.1', resolve));
   const gatewayPort = portProbe.address().port;
   await new Promise(resolve => portProbe.close(resolve));
+  await invoke('gateway:stop');
   await invoke('settings:save', { gatewayPort });
   const gateway = await invoke('gateway:start');
   const models = await fetch(`${gateway.url}/models`, { headers: { Authorization: `Bearer ${state.settings.gatewayToken}` } });
   assert.equal(models.status, 200); assert.ok((await models.json()).data.some(m => m.id === `${provider.id}/smoke-model`));
   await invoke('gateway:stop');
-  await invoke('clipboard:write', { text: 'Antigravity Studio desktop smoke test passed' });
+  await invoke('clipboard:write', { text: 'Gravity desktop smoke test passed' });
 
   // Exercise the actual renderer controls and IPC persistence in this disposable profile.
   await click('button.conversation-link[title="Permission smoke conversation"]');
@@ -104,7 +136,6 @@ try {
   await click('[data-testid="provider-test-model"]');
   await waitFor(`!!document.querySelector('.notice.success[role="status"]') && !document.querySelector('[data-testid="provider-test-model"]').disabled`, 'A completed model response is reported as success');
   assert.equal((await invoke('state:get')).conversations.find(c => c.id === conversation.id).providerId, legacyProvider.id, 'Successful test keeps the existing chat provider until explicitly applied');
-  const output = path.resolve('artifacts'); await fs.mkdir(output, { recursive: true });
   await evaluate(`document.querySelector('.settings-body').scrollTop = 0`); await pause(200);
   await fs.writeFile(path.join(output, 'provider-connection.png'), (await win.webContents.capturePage()).toPNG());
   await evaluate(`document.querySelector('[data-testid="use-provider-in-chat"]').scrollIntoView({ block: 'center' })`); await pause(200);
@@ -202,7 +233,7 @@ try {
   assert.equal(savedManaged.env.BRIDGE_TEST_SECRET, '********');
   assert.ok(!(await fs.readFile(path.join(temporary, 'settings/state.json'), 'utf8')).includes('private-fixture-environment'), 'Bridge environment is encrypted at rest');
   await click('[data-testid="browser-connector-tab"]');
-  await click('[data-testid="browser-start"]');
+  if (!(await invoke('state:get')).browserConnector.running) await click('[data-testid="browser-start"]');
   await waitFor(`window.desktop.invoke('state:get').then(s => s.browserConnector.running && s.providers.some(p => p.managedBy === 'browser-connector'))`, 'Browser connector automatically configures its provider');
   const browserState = await invoke('state:get');
   const chromeProvider = browserState.providers.find(p => p.managedBy === 'browser-connector');
@@ -228,13 +259,14 @@ try {
   await waitFor(`!!document.querySelector('[data-testid="browser-setup"]')`, 'Recovered chat opens browser setup for pairing');
   const connectorBase = browserState.browserConnector.url.replace(/\/v1$/, '');
   const extensionId = 'abcdefghijklmnopabcdefghijklmnop', pairingNonce = 'isolated-native-pairing-fixture-nonce-0123456789';
-  const extensionRequest = (route, body, token) => fetch(connectorBase + route, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', 'X-Connector-Extension-ID': extensionId, 'X-Connector-Protocol': '2', 'X-Connector-Version': '1.0.2', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const extensionRequest = (route, body, token) => fetch(connectorBase + route, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', 'X-Connector-Extension-ID': extensionId, 'X-Connector-Protocol': '3', 'X-Connector-Version': '1.0.5', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const legacyPair = await fetch(connectorBase + '/connector/pair', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Connector-Extension-ID': extensionId }, body: JSON.stringify({ extensionId, nonce: pairingNonce }) });
   assert.equal(legacyPair.status, 426, 'Old extension is rejected before pairing');
   await waitFor(`document.querySelector('[data-testid="browser-connector-error"]')?.textContent.includes('outdated')`, 'Upgrade instructions are visible for an older extension');
   const pendingPair = await extensionRequest('/connector/pair', { extensionId, nonce: pairingNonce }); assert.equal(pendingPair.status, 202);
   const pairing = await pendingPair.json();
-  await waitFor(`document.querySelector('[data-testid="browser-extension-version"]')?.textContent.includes('1.0.2') && !document.querySelector('[data-testid="browser-connector-error"]')`, 'Compatible extension version replaces the stale-client error');
+  await waitFor(`document.querySelector('[data-testid="browser-extension-version"]')?.textContent.includes('1.0.5') && !document.querySelector('[data-testid="browser-connector-error"]')`, 'Compatible extension version replaces the stale-client error');
+  assert.equal(await evaluate(`!!document.querySelector('[data-testid="browser-extension-version"]').closest('details')`), false, 'Active extension version stays visible when setup details are collapsed');
   const beforeApproval = await extensionRequest('/connector/pair/status', { id: pairing.id, nonce: pairingNonce }); assert.equal(beforeApproval.status, 202);
   await click(`[data-testid="browser-approve-${pairing.id}"]`);
   const afterApproval = await extensionRequest('/connector/pair/status', { id: pairing.id, nonce: pairingNonce }); assert.equal(afterApproval.status, 200);
@@ -250,17 +282,18 @@ try {
   assert.equal(siteTestJob?.siteId, 'qwen', 'Site-card test uses Qwen instead of the provider default Claude');
   assert.deepEqual(siteTestJob.messages, [{ role: 'user', content: 'Reply with only OK.' }]);
   assert.equal(siteTestJob.tools, undefined, 'Website test sends no project context or application tools');
-  assert.equal((await extensionRequest('/connector/results', { id: siteTestJob.id, siteId: 'qwen', result: { role: 'assistant', content: 'OK' } }, extensionToken)).status, 200);
+  assert.equal((await extensionRequest('/connector/results', { id: siteTestJob.id, siteId: 'qwen', rawText: 'OK' }, extensionToken)).status, 200);
   await waitFor(`document.querySelector('[data-testid="browser-test-result-qwen"]')?.textContent.includes('Last test passed.')`, 'Completed Qwen response is shown in its own site card');
   assert.equal((await invoke('state:get')).providers.find(p => p.id === chromeProvider.id).defaultModel, chromeProvider.defaultModel, 'Site test preserves the default model');
   const browserConversation = await invoke('conversation:create', { providerId: chromeProvider.id, model: 'claude-web', mode: 'plan', title: 'Browser connector fixture' });
-  await invoke('conversation:send', { id: browserConversation.id, content: 'Reply with BROWSER FIXTURE READY.' });
+  await invoke('conversation:send', { id: browserConversation.id, content: 'hello' });
   let browserJob;
   for (let i = 0; i < 100; i++) { browserJob = (await (await extensionRequest('/connector/jobs', undefined, extensionToken)).json()).job; if (browserJob) break; await pause(50); }
   assert.equal(browserJob?.siteId, 'claude');
-  assert.ok(browserJob.messages.some(m => m.content === 'Reply with BROWSER FIXTURE READY.'));
-  assert.equal((await extensionRequest('/connector/results', { id: browserJob.id, siteId: 'claude', result: { role: 'assistant', content: 'BROWSER FIXTURE READY.' } }, extensionToken)).status, 200);
-  await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.some(c => c.id === ${JSON.stringify(browserConversation.id)} && c.status === 'idle' && c.messages.some(m => m.content === 'BROWSER FIXTURE READY.')))`, 'Desktop agent receives an authenticated browser-fixture response');
+  assert.ok(browserJob.messages.some(m => m.content === 'hello'));
+  assert.ok(browserJob.tools.length, 'Greeting uses the same tool-enabled agent path as the reported failure');
+  assert.equal((await extensionRequest('/connector/results', { id: browserJob.id, siteId: 'claude', rawText: '{“content”:“Hello! I’m Gravity, a coding agent working in your selected project folder.”,“tool_calls”:[]}' }, extensionToken)).status, 200);
+  await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.some(c => c.id === ${JSON.stringify(browserConversation.id)} && c.status === 'idle' && c.messages.some(m => m.content === 'Hello! I’m Gravity, a coding agent working in your selected project folder.')))`, 'Desktop agent accepts the smart-quoted greeting without an action or error');
   assert.ok(!JSON.stringify(await invoke('state:get')).includes(extensionToken), 'Extension token never appears in public state');
   await evaluate(`document.querySelector('.settings-body').scrollTop = 0`); await pause(200);
   const browserScreenshot = await win.webContents.capturePage(); await fs.writeFile(path.join(output, 'browser-setup.png'), browserScreenshot.toPNG());

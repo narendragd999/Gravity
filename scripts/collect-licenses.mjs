@@ -18,5 +18,5 @@ async function packages(root) {
 await packages('node_modules');
 try { for (const entry of await fs.readdir('node_modules/.pnpm', { withFileTypes: true })) if (entry.isDirectory()) await packages(path.join('node_modules/.pnpm', entry.name, 'node_modules')); } catch { /* npm uses a flattened installation. */ }
 records.sort((a,b) => a.id.localeCompare(b.id));
-await fs.writeFile('THIRD_PARTY_LICENSES.txt', 'Dependency notices for Antigravity Studio, including build-time tooling.\n'+records.map(r=>r.text).join('\n'));
+await fs.writeFile('THIRD_PARTY_LICENSES.txt', 'Dependency notices for Gravity, including build-time tooling.\n'+records.map(r=>r.text).join('\n'));
 console.log(`Collected license notices for ${records.length} installed packages.`);

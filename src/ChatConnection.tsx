@@ -14,7 +14,7 @@ export default function ChatConnection({ provider, model, providers, connector, 
   const site = connector.sites.find(site => `${site.id}-web` === model);
   const setupIssue = !browser ? '' : !connector.running ? 'Start the browser connector to use this model.'
     : connector.error ? connector.error
-    : !connector.paired ? 'Connect the Chrome extension and approve it in Web2API bridges.'
+    : !connector.paired ? 'Connect the Chrome extension and approve it in Browser Connector.'
     : !site?.connected ? 'Open this website in the Chrome profile with the extension installed, and sign in.'
     : site.error || '';
   const chrome = providers.find(p => p.managedBy === 'browser-connector' && p.models.includes('claude-web'));
