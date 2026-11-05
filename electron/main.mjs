@@ -19,6 +19,7 @@ import { userDataDirectory, importEnvironmentProviders, startConfiguredServices 
 import { providerCapabilities, cleanProviderError } from './provider-capabilities.mjs';
 import { writeDataExport, importData } from './data-transfer.mjs';
 import { prepareWebsiteData } from './website-data.mjs';
+import { AttachmentStore } from './attachments.mjs';
 
 app.setName('Gravity');
 if (process.platform === 'win32') app.setAppUserModelId('dev.antigravity.studio');
@@ -36,6 +37,7 @@ let permanentWebsiteData, legacyWebsiteSources = [], websiteRoots = () => [];
 
 const terminals = new Map();
 const workspace = new WorkspaceService();
+const attachments = new AttachmentStore();
 const emit = payload => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:event', payload); };
 const changed = () => emit({ type: 'state' });
 const getState = () => ({ ...store.publicState(), dataRecovery: { status: dataRecovery.status, message: dataRecovery.message }, appVersion: app.getVersion(), web2apiSetup: web2apiSetup.status(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
@@ -106,7 +108,16 @@ async function dispatch(method, args = {}) {
         if (item.revision !== undefined && item.revision !== excerpt.revision) throw new Error('An attached file changed after it was selected. Remove and attach that context again before sending.');
         return { ...excerpt, projectId: item.projectId };
       }));
-      return runner.start(args.id, args.content, args.images, contexts);
+      const files = await attachments.resolve(args.fileIds);
+      return runner.start(args.id, args.content, args.images, contexts, files);
+    }
+    case 'attachments:choose': {
+      const provider = args.providerId ? store.provider(args.providerId) : undefined;
+      const capabilities = provider ? providerCapabilities(provider, args.model) : { images: false };
+      const result = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Text and code', extensions: ['txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'py', 'html', 'css', 'yaml', 'yml', 'xml', 'log'] },
+          ...(capabilities.images ? [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] : []), { name: 'All files', extensions: ['*'] }] });
+      return result.canceled ? { files: [], images: [], rejected: [] } : attachments.select(result.filePaths, capabilities);
     }
     case 'conversation:stop': return runner.stop(args.id);
     case 'approval:resolve': if (typeof args.approved !== 'boolean') throw new Error('Approval must be true or false.'); return runner.resolve(args.id, args.approved);
@@ -263,6 +274,8 @@ function createWindow() {
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false } });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== (devUrl || pathToFileURL(entry).href)) event.preventDefault(); });
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) attachments.clear(); });
+  mainWindow.on('closed', () => attachments.clear());
   mainWindow.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(mainWindow, { type: 'question', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0, title: 'Unsaved changes', message: 'Close the app and discard unsaved editor changes?' });
     if (choice === 1) event.preventDefault();

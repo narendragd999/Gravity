@@ -70,7 +70,7 @@ export default function Bridges({ state, call, onAddProvider, onBrowserSetup, on
     <div className="section-eyebrow">WEB2API CONNECTIONS</div>
     <h2>Web2API Bridges</h2>
     <p className="muted">Connect a website below. Gravity manages its saved session and service.</p>
-    <div data-testid="standalone-web2api-help"><Web2ApiSetup state={state} call={call} onUseProvider={onUseProvider} modelSelectionDisabled={modelSelectionDisabled} /></div>
+    <div data-testid="standalone-web2api-help"><Web2ApiSetup state={state} call={call} onBrowserSetup={onBrowserSetup} onUseProvider={onUseProvider} modelSelectionDisabled={modelSelectionDisabled} /></div>
     <button className="browser-provider-shortcut" onClick={onBrowserSetup}><Chrome size={20} /><span><strong>Browser Connector</strong><small>Use Claude, Gemini, or your usual Chrome tabs through the extension.</small></span></button>
     <details className="advanced bridge-expert-settings" data-testid="bridge-expert-settings"><summary>Advanced adapter profiles & configuration</summary><label className="check-label"><input type="checkbox" checked={state.settings.bridgesAutoStart} disabled={!!busy} onChange={e => { const bridgesAutoStart = e.target.checked; void task('settings', async () => { await call('settings:save', { bridgesAutoStart }); }); }} />Start saved bridge profiles when Gravity opens</label>
     <div className="provider-pills bridge-profile-pills">

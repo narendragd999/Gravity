@@ -7,7 +7,7 @@ import { defaultDataDir, loadConfig, updateConfig, validateConfig } from './conf
 import { createWebApiServer } from './server.mjs';
 import { createDeepSeekAdapter } from './adapters/deepseek.mjs';
 import { createQwenAdapter } from './adapters/qwen.mjs';
-import { browserSites, createBrowserAdapter, openProfile, visibleChallenge } from './adapters/browser.mjs';
+import { browserSites, createBrowserAdapter, openProfile, visibleChallenge, waitForSecurityCheck } from './adapters/browser.mjs';
 import { openManualLogin, discoverInstalledBrowsers } from './manual-login.mjs';
 import { LOGIN_ERRORS, loginFailure, makeLoginReporter } from './login-events.mjs';
 
@@ -108,13 +108,14 @@ export async function loginBrowserProfile(siteId, config, dataDir, {
   openBrowser = openManualLogin, openContext = openProfile,
   createInput = () => createInterface({ input: stdin, output: stdout }),
   log = console.log, closeTimeoutMs = 15000, autoContinue = false, signal, loginTimeoutMs = 900000,
+  securityCheckTimeoutMs = 120000, now = Date.now, wait = pause,
   browserChannel, report = () => {}, createDirectAdapter = (id, token) => (id === 'qwen' ? createQwenAdapter : createDeepSeekAdapter)({ token }),
 } = {}) {
   const site = browserSites[siteId];
   if (!site) throw new Error('Choose chatgpt, zai, qwen, or deepseek for account setup.');
   const channel = browserChannel || config.providers[siteId]?.browserChannel || config.browserChannel;
   if (!['chrome', 'msedge'].includes(channel)) throw new Error('Choose Chrome or Edge.');
-  let context, input, closeTimer, stage = 'opening-browser';
+  let context, input, closeTimer, stage = 'opening-browser', securityUntil, securityNotified = false;
   const progress = next => { stage = next; report(next); };
   const collector = createLoginTokenCapture(siteId);
   const abortContext = () => { if (context) void context.close().catch(() => {}); };
@@ -133,7 +134,7 @@ export async function loginBrowserProfile(siteId, config, dataDir, {
       closeTimer = setTimeout(() => reject(loginFailure('browser_close_timeout', stage, siteId)), autoContinue ? loginTimeoutMs : closeTimeoutMs);
     })]), signal);
     clearTimeout(closeTimer); progress('releasing-profile');
-    log('Checking your saved sign-in. The separate browser will open briefly.');
+    log('Checking your saved sign-in in the separate browser. Keep this check window open if the website asks for verification; complete it yourself there.');
     progress('opening-profile');
     context = await openContext({ siteId, dataDir, channel, ...(browser.executable ? { executablePath: browser.executable } : {}) });
     signal?.throwIfAborted();
@@ -146,10 +147,23 @@ export async function loginBrowserProfile(siteId, config, dataDir, {
     catch { signal?.throwIfAborted(); throw loginFailure('navigation_failed', stage, siteId); }
     progress('checking-session');
     const classifyPage = async () => {
-      let location; try { location = new URL(page.url()); } catch { return 'navigation_failed'; }
-      if (location.hostname === 'accounts.google.com' && /rejected/.test(location.pathname)) return 'oauth_rejected';
-      if (location.origin !== new URL(site.url).origin || /\/(?:auth|login|signin)(?:\/|$)/i.test(location.pathname)) return 'sign_in_required';
-      if (await visibleChallenge(page)) return 'security_check_required';
+      const classifyLocation = () => {
+        if (page.isClosed?.()) return 'browser_closed_abnormally';
+        let location; try { location = new URL(page.url()); } catch { return 'navigation_failed'; }
+        if (location.hostname === 'accounts.google.com' && /rejected/.test(location.pathname)) return 'oauth_rejected';
+        if (location.origin !== new URL(site.url).origin || /\/(?:auth|login|signin)(?:\/|$)/i.test(location.pathname)) return 'sign_in_required';
+        return null;
+      };
+      let failure = classifyLocation(); if (failure) return failure;
+      if (await visibleChallenge(page)) {
+        securityUntil ??= now() + securityCheckTimeoutMs;
+        progress('waiting-for-security-check');
+        if (!securityNotified) { securityNotified = true; log('Complete the website security check yourself in the open verification browser. Gravity waits on this page without reopening or reloading it.'); }
+        try { await waitForSecurityCheck(page, { signal, timeoutMs: Math.max(0, securityUntil - now()), now, wait }); }
+        catch (error) { signal?.throwIfAborted(); throw loginFailure(error.code === 'browser_closed_abnormally' ? error.code : 'security_check_required', stage, siteId); }
+        progress('checking-session');
+        failure = classifyLocation(); if (failure) return failure;
+      }
       return null;
     };
     let pageFailure = await classifyPage();

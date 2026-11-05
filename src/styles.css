@@ -144,6 +144,7 @@
 .history-page{padding-top:28px}
 .history-heading{margin-top:0}
 .history-row:focus-within>.icon-btn{opacity:1}
+.message-file-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}.message-file-chips>span{display:flex;gap:5px;align-items:center;border:1px solid var(--border);padding:4px 7px;border-radius:5px;font-size:calc(10px * var(--ui-scale));color:var(--muted);background:var(--bg)}
 @media(max-width:1100px){.sidebar{width:216px}.composer-area,.message-list{padding-left:22px;padding-right:22px}.new-conversation,.sidebar-nav{gap:7px}}
 @media(max-height:760px){.welcome{padding-top:20px;padding-bottom:20px}.welcome-brand{margin-bottom:12px}.welcome h1{font-size:calc(25px * var(--ui-scale))}.starter-grid{margin-top:20px}.composer-area{padding-bottom:10px}}
 @container(max-width:650px){.composer-keyboard-hint{display:none}.header-path>span{max-width:100px}.welcome{padding-left:22px;padding-right:22px}.starter-grid{grid-template-columns:1fr;max-width:360px;gap:6px}.starter-grid>button{min-height:38px;padding:9px 12px}.model-selector{max-width:180px}.model-selector>svg:first-child{display:none}.composer-options{gap:6px}.composer-permissions .permission-context{margin-left:0}.chat-connection-more{font-size:0}.chat-connection-more svg{width:13px;height:13px}.chat-connection-status{flex-wrap:wrap}}

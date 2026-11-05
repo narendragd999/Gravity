@@ -1,5 +1,5 @@
 // Run through Electron, not node --test. Uses disposable data and a local fixture provider.
-import { app, BrowserWindow, clipboard } from 'electron';
+import { app, BrowserWindow, clipboard, dialog } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -243,6 +243,33 @@ try {
   const discoveryOnlyTest = await invoke('provider:test', { id: discoveryOnlyProvider.id });
   assert.equal(discoveryOnlyTest.ok, false, 'Successful discovery cannot make failed generation pass');
   assert.match(discoveryOnlyTest.message, /Fixture generation unavailable/);
+  await click('button.new-conversation');
+  await setValue('.model-selector select', JSON.stringify([provider.id, provider.defaultModel]));
+  const pickedPath = path.join(temporary, 'picked-note.md'); await fs.writeFile(pickedPath, 'SMOKE_PICKED_NOTE: only this explicitly selected file.');
+  const originalDialog = dialog.showOpenDialog;
+  let releasePicker;
+  dialog.showOpenDialog = async () => new Promise(resolve => { releasePicker = resolve; });
+  try {
+    await click('[data-testid="attach-files"]');
+    assert.equal(typeof releasePicker, 'function');
+    await click('button.new-conversation');
+    releasePicker({ canceled: false, filePaths: [pickedPath] });
+    await waitFor(`!document.querySelector('[data-testid="attach-files"]').disabled`, 'Picker settles after its originating draft changes');
+    assert.equal(await evaluate(`!!document.querySelector('[data-testid="picked-files"]')`), false, 'Late picker results never attach to a new draft');
+  } finally { dialog.showOpenDialog = originalDialog; }
+  dialog.showOpenDialog = async (_window, options) => { assert.equal(options.title, 'Attach files'); assert.ok(options.properties.includes('openFile') && options.properties.includes('multiSelections')); return { canceled: false, filePaths: [pickedPath] }; };
+  try { await click('[data-testid="attach-files"]'); await waitFor(`document.querySelector('[data-testid="picked-files"]')?.textContent.includes('picked-note.md')`, 'Plus opens native file selection and shows the selected file without a project'); }
+  finally { dialog.showOpenDialog = originalDialog; }
+  dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
+  try {
+    await click('[data-testid="attach-files"]');
+    await waitFor(`!document.querySelector('[data-testid="attach-files"]').disabled`, 'Cancelled picker settles');
+    assert.equal(await evaluate(`document.querySelector('[data-testid="picked-files"]')?.textContent.includes('picked-note.md')`), true, 'Cancellation retains existing attachments');
+  } finally { dialog.showOpenDialog = originalDialog; }
+  await fs.writeFile(path.join(output, 'gravity-file-attachment.png'), (await win.webContents.capturePage()).toPNG());
+  await click('.send-btn[aria-label="Send message"]');
+  await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.some(c => !c.projectId && c.status === 'idle' && c.messages.some(m => m.files?.some(f => f.name === 'picked-note.md'))))`, 'Selected file sends as projectless read-only chat context');
+  assert.ok(fixtureRequests.some(request => request.body?.messages?.some(message => typeof message.content === 'string' && message.content.includes('SMOKE_PICKED_NOTE')) && !request.body.tools?.length), 'Picked text reaches the model with no workspace tools');
   const projectRoot = path.join(temporary, 'project'); await fs.mkdir(projectRoot);
   const originalFile = 'hello\ncontext line two\ncontext line three\n';
   await fs.writeFile(path.join(projectRoot, 'hello.txt'), originalFile);

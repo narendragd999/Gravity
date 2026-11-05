@@ -136,7 +136,7 @@ export class Web2ApiSetup {
     this.changed({ stage: event.stage, ...(event.browserChannel ? { browserChannel: event.browserChannel } : {}),
       ...(failure ? { errorCode: failure.code, recoveryAction: failure.recoveryAction, error: failure.message, message: failure.message }
         : { phase: verifying ? 'verifying' : 'login', error: undefined, errorCode: undefined, recoveryAction: undefined,
-          message: verifying ? 'Checking the saved account session.' : 'Sign in, open a new empty chat, and close the separate account browser.' }) });
+          message: event.stage === 'waiting-for-security-check' ? 'Complete the security check in the open verification browser. Keep it open; Gravity continues automatically.' : verifying ? 'Checking the saved account session.' : 'Sign in, open a new empty chat, and close the separate account browser.' }) });
   }
 
   step(stage, phase, message) {

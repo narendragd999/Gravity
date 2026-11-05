@@ -1,5 +1,16 @@
 # Validation — 3 November 2026
 
+## Version 1.7.1 — 5 November 2026
+
+- **357 Node tests passed** on Windows, with no failures or skips. TypeScript/Vite production build and Windows x64 portable packaging passed.
+- New regressions cover bounded same-page security waits, completion/cancellation/browser closure, safe upstream HTTP errors, preserved Chromium sandbox, native attachment IDs/revocation, changed-file preflight, text/image limits and capability checks, projectless Chat history, and atomic attachment backup import without executable authority.
+- Native desktop smoke passed with the + picker stubbed at Electron's native dialog boundary. It verifies multi-file picker options, projectless file-only sending with no workspace tools, retained attachments after cancellation, and discarded late results after switching drafts. Existing setup, permissions, provider recovery, context/review/Undo and browser pairing flows also passed.
+- The attachment composer and light/dark 980 × 640 layouts at 125% text were visually inspected. These use disposable app data, temporary selected files and local providers.
+- **18 isolated Electron DOM checks passed** across six website adapters and history/draft/challenge/password/expiry/cancellation safeguards.
+- The 1.7.1 portable executable passed an isolated launch from a folder with spaces with developer runtimes removed from PATH. Its bundled website service completed in-app setup without sidecar files, system Node, live website traffic or inference; API authentication, encrypted keys and saved startup preferences were verified.
+- Live website authentication/generation and a fresh Windows virtual machine remain acceptance checks. The security-wait fixtures verify application behavior; they cannot guarantee that ChatGPT's website will accept a browser session or stop requesting CAPTCHA.
+- OpenCode standardization uses a [pinned selected-source comparison](OPENCODE-STANDARDIZATION.md). It does not establish full product parity. PDF/Office extraction and persistent drafts remain documented future work.
+
 ## Version 1.7.0 — 5 November 2026
 
 - 339 Node regression/integration tests passed on Windows; TypeScript/Vite production build and portable packaging passed.

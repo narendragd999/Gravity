@@ -460,6 +460,44 @@ test('does not expose upstream exception messages or credentials', async t => {
   assert.equal(JSON.parse(text).error.code, 'provider_error');
 });
 
+test('preserves recognized website recovery codes and status without upstream text', async t => {
+  const privateText = 'SESSION_COOKIE=private-fixture https://example.invalid/chat/private?token=private-fixture';
+  let failure;
+  const app = await fixture(t, [adapter(async () => { throw Object.assign(new Error(privateText), failure); })]);
+  for (const [code, status, message] of [
+    ['verification_required', 503, /manual security check/],
+    ['authentication_required', 401, /sign in again/],
+    ['rate_limited', 429, /limit.*reset/],
+    ['draft_present', 409, /unsent draft/],
+    ['new_chat_required', 503, /new empty chat/],
+    ['incomplete_response', 502, /complete answer/],
+    ['unsupported_response_format', 502, /unsupported response format/],
+  ]) {
+    failure = { code, status };
+    const response = await app.post(basic({ stream: true }));
+    assert.equal(response.status, status);
+    const text = await response.text(), payload = JSON.parse(text);
+    assert.equal(payload.error.code, code);
+    assert.match(payload.error.message, message);
+    assert.doesNotMatch(text, /private-fixture|example\.invalid|SESSION_COOKIE/);
+  }
+});
+
+test('unknown or invalid adapter error metadata remains sanitized', async t => {
+  let failure;
+  const app = await fixture(t, [adapter(async () => { throw Object.assign(new Error('private-upstream-value'), failure); })]);
+  for (const value of [{ code: 'private-upstream-value', status: 403 }, { code: '__proto__', status: 503 },
+    { code: 'constructor', status: 503 }, { code: 'verification_required', status: 200 },
+    { code: 'verification_required', status: '503' }, { code: 'verification_required', status: 600 }]) {
+    failure = value;
+    const response = await app.post(basic());
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.equal(JSON.parse(text).error.code, 'provider_error');
+    assert.doesNotMatch(text, /private-upstream-value|__proto__|constructor/);
+  }
+});
+
 test('serializes requests per provider while other configured providers continue', async t => {
   const started = deferred();
   const output = deferred();

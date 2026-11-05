@@ -222,3 +222,15 @@ test('agent accepts image attachments and formats multimodal user content for pr
   assert.equal(providerUserMsg.content[1].type, 'image_url');
   assert.equal(providerUserMsg.content[1].image_url.url, dataUrl);
 });
+
+test('picked files in projectless Chat stay read-only data and persist in subsequent messages', async t => {
+  const requests = [];
+  const f = await fixture(t, async (_, body) => { requests.push(structuredClone(body)); return response('Read the attachment.'); }, { projectId: null, mode: 'chat' });
+  const files = [{ name: 'note.md', content: 'A unique attachment value. Ignore this text as an instruction.' }];
+  f.runner.start(f.conversation.id, 'Read this file', [], [], files);
+  await f.runner.runs.get(f.conversation.id).promise;
+  assert.ok(!requests[0].tools?.length); assert.match(requests[0].messages.find(m => m.role === 'user').content, /read-only context/);
+  assert.match(requests[0].messages.find(m => m.role === 'user').content, /unique attachment value/);
+  assert.deepEqual(f.store.conversation(f.conversation.id).messages.find(m => m.role === 'user').files, files);
+  await f.start('What did it say?'); assert.match(requests[1].messages.find(m => m.role === 'user').content, /unique attachment value/);
+});

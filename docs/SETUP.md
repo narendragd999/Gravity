@@ -2,7 +2,7 @@
 
 ## Run the desktop
 
-Double-click **`Gravity-1.7.0-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
+Double-click **`Gravity-1.7.1-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
 
 `npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`, including the website runtime. `npm run pack` creates an unpacked desktop distribution from existing inputs; run `npm run dist` first to prepare those inputs and the bundled website service.
 
@@ -15,7 +15,7 @@ A packaged executable still needs a usable website account or model API connecti
 1. Open **Settings → Get started** or **Web2API Bridges**.
 2. Choose **DeepSeek**, **Qwen**, **ChatGPT**, or **Z.ai**. If needed, choose an installed browser under **Browser for the next sign-in**.
 3. Click **Connect & start**.
-4. Sign in yourself in the separate browser that opens and complete any security checks. Open a **new, empty chat**, then **close all windows of that separate browser**. Gravity reopens the saved profile briefly to check it, then starts the service automatically.
+4. Sign in yourself in the separate browser that opens and complete any security checks. Open a **new, empty chat**, then **close all windows of that separate browser**. Gravity reopens the saved profile to check it, then starts the service automatically. If that verification browser asks for a security check, keep it open while completing the check.
 5. When the service is ready, click **Test response**. This sends one short message and may use account quota or appear in website history. Click **Use in this chat** if the connection is not already selected.
 
 The same close-browser flow applies to all four websites on Windows. No extension, pasted cookie, API key, terminal command, or configuration file is needed for this setup. DeepSeek/Qwen use the captured session for direct HTTPS; ChatGPT/Z.ai use their separate browser profiles to submit messages and capture network responses. Your usual browser profile is not read or changed.
@@ -23,6 +23,12 @@ The same close-browser flow applies to all four websites on Windows. No extensio
 Saved sessions are reused and the configured service starts with Gravity. Use **Sign in again** when a session expires. Setup checks readiness without generating a response; only a successful **Test response** verifies generation at that time. Website model availability, quotas, and security checks still apply. The aliases identify website routes, not access to a specific restricted model version.
 
 If setup fails, follow the recovery action beside the error. **Connection details & diagnostics → Copy diagnostics** records stages and error codes without account credentials or chat content. Preparing another account preserves existing connections where possible; service reload waits for active requests. Do not delete your saved profile to retry a sign-in check.
+
+### ChatGPT keeps asking for verification
+
+After you close the separate sign-in browser, Gravity opens the saved session to check it. If that **verification browser** shows a security check, complete it yourself and **keep that browser open**. Gravity waits on the same page for up to two minutes and continues automatically when it becomes ready.
+
+If the check keeps repeating, use **Use your normal Chrome tab** when the recovery screen appears and follow Browser Connector setup below. To stop the wait earlier, click **Cancel setup**, then open **Settings → Browser Connector**. Keep a new, empty ChatGPT tab open in your normal Chrome profile. Gravity retains the saved dedicated sign-in. Website security checks can still recur; changing the app's sandbox is not a supported remedy.
 
 ## Optional Browser Connector extension
 
@@ -57,6 +63,17 @@ Provider keys and advanced-header values are encrypted in desktop state. Existin
 **Test model** sends a short, fixed message to the saved default model and requires a nonempty text response. It does not send conversation history, project files, or tool definitions. It can use provider quota and, for browser models, appear in website history. Discovery remains separate and is not required for testing a manually entered model. Browser tests first check that the connector is running, the extension is paired, and the selected website tab is detected and available. A successful test verifies a text response at that time; test project tools separately with a model that supports tool calls.
 
 The Get started page separates bundled website setup, the Browser Connector extension, and API-key setup. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
+
+## Attach files to a chat
+
+1. Open a new or existing chat and click the **+** beside the model selector.
+2. Choose your files in the Windows file picker, then click **Open**. Hold Ctrl to select more than one.
+3. Check the file chips above the message box. Click a chip's **×** to remove it. Cancelling the picker keeps your current draft and attachments.
+4. Type what you want Gravity to do with the files, then press **Enter** or **Send**. You can also send a file without typing a message.
+
+UTF-8 text/code files are supported in every chat, without opening a project. Attach up to four files or project excerpts, with 60,000 characters combined; each picked text file must be at most 40 KiB and 500 lines. PNG, JPEG, WebP and GIF are supported when the selected connection accepts images, with up to eight images, 8 MiB each and a 24 MiB combined encoded limit. PDF, Office and ZIP files are currently unsupported and show an individual error; attach exported UTF-8 text instead.
+
+Files provide read-only message context and their text is saved in chat history and backups. They do not give the agent permission to edit their original folder. If a text file changes after selection, remove it and attach it again before sending. To edit project files, use **Open folder**, choose **Build**, and select the appropriate permissions.
 
 ## Projects, agents, and changes
 

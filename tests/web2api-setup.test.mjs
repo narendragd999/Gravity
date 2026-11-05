@@ -350,6 +350,37 @@ test('structured helper events survive chunk boundaries and expose only safe rec
   assert.ok(!JSON.stringify(diagnostic).includes('private.test')); assert.ok(!JSON.stringify(diagnostic).includes(f.base));
 });
 
+test('security progress distinguishes the open verification browser and cancellation settles without saving an account', async t => {
+  const f = await fixture(t, { enabled: [], delayLogin: true });
+  const providersBefore = structuredClone(f.store.data.providers);
+  const operation = f.setup.connect('chatgpt');
+  const rejected = assert.rejects(operation, /cancelled/);
+  await until(() => f.commands.some(command => command[0] === 'login'));
+  f.helperChildren.at(-1).stdout.write(LOGIN_EVENT_PREFIX + JSON.stringify({ version: 1, type: 'progress', siteId: 'chatgpt', stage: 'waiting-for-security-check', timestamp: 100 }) + '\n');
+  const progress = f.setup.status();
+  assert.equal(progress.phase, 'verifying'); assert.equal(progress.busy, true);
+  assert.match(progress.message, /open verification browser.*Keep it open/);
+  await f.setup.cancel(); await rejected;
+  assert.equal(f.setup.status().phase, 'cancelled'); assert.equal(f.setup.status().busy, false);
+  assert.match(f.setup.status().message, /cancelled/); assert.equal(f.config.providers.chatgpt.enabled, false);
+  assert.deepEqual(f.store.data.providers, providersBefore); assert.deepEqual(f.bridgeCalls, []);
+});
+
+test('persistent security challenge offers Browser Connector recovery and preserves existing website services', async t => {
+  const f = await fixture(t, { enabled: ['zai'], delayLogin: true });
+  const existing = await f.setup.connect('zai');
+  const operation = f.setup.connect('chatgpt');
+  const rejected = assert.rejects(operation, /normal signed-in Chrome/);
+  await until(() => f.commands.some(command => command[0] === 'login'));
+  const child = f.helperChildren.at(-1);
+  child.stdout.write(LOGIN_EVENT_PREFIX + JSON.stringify({ version: 1, type: 'error', siteId: 'chatgpt', stage: 'waiting-for-security-check', code: 'security_check_required', timestamp: 100 }) + '\n');
+  child.emit('close', 1); await rejected;
+  assert.equal(f.setup.status().recoveryAction, 'browser-connector');
+  assert.equal(f.config.providers.chatgpt.enabled, false); assert.equal(f.config.providers.zai.enabled, true);
+  assert.equal(f.bridges.entries.get(existing.bridgeId).ready, true);
+  assert.deepEqual(f.bridgeCalls.map(call => call[0]), ['start']);
+});
+
 test('adding another account leaves the working service online until safe idle reload', async t => {
   const f = await fixture(t, { enabled: ['zai'], delayLogin: true });
   const previous = await f.setup.connect('zai');

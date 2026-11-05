@@ -19,6 +19,46 @@ class ApiError extends Error {
   }
 }
 
+// Adapter exception text can contain private website data. Preserve only
+// recognized recovery codes/statuses, with messages owned by this server.
+const ADAPTER_ERRORS = Object.freeze({
+  authentication_required: 'The website session expired or lacks access. Open connection setup and sign in again.',
+  login_required: 'The website is not ready for chat. Open connection setup, sign in, and complete any security check.',
+  verification_required: 'The website requires a manual security check. Complete it in the website browser. No message was retried automatically.',
+  profile_busy: 'This account browser is already open. Close its separate windows before starting another connection.',
+  browser_unavailable: 'The account browser could not be opened. Check Chrome or Edge and the saved connection in setup.',
+  setup_required: 'The website browser driver is unavailable. Repair or update the Gravity installation.',
+  invalid_profile_directory: 'The saved account browser folder could not be used. Open connection setup to repair it.',
+  new_chat_required: 'The website restored an existing conversation. Open a new empty chat in its browser before sending.',
+  draft_present: 'The website restored an unsent draft. Save or clear that draft in its browser before sending.',
+  rate_limited: 'The website rate limit was reached. Wait for the account limit to reset before sending again.',
+  context_length_exceeded: 'The message exceeds the website context limit. Shorten it or remove some attached file context.',
+  model_unavailable: 'The requested model is unavailable on this website account. Choose an available website model.',
+  model_not_found: 'The requested website model is unsupported. Choose a model returned by this connection.',
+  invalid_prompt: 'The website needs a shorter, nonempty text message.',
+  invalid_token: 'The saved website session has an invalid format. Open connection setup and sign in again.',
+  upstream_unavailable: 'The website could not be reached. Check its browser and your network connection before sending again.',
+  upstream_error: 'The website rejected the request or reported an error. Check its browser and account status before sending again.',
+  browser_request_failed: 'The website browser request failed. Check its browser and connection setup before sending again.',
+  incomplete_response: 'The website did not return a complete answer. Check whether it received your message before sending again.',
+  response_incomplete: 'The website reply was interrupted. Check whether it received your message before sending again.',
+  malformed_response: 'The website returned an unsupported or malformed answer. No partial reply or action was accepted.',
+  unsupported_response_format: 'The website returned an unsupported response format. No answer or action was accepted.',
+  invalid_response: 'The website returned an invalid response. No answer or action was accepted.',
+  empty_response: 'The website completed without an answer. Check its browser before sending again.',
+  response_too_large: 'The website answer exceeded the supported size. Request a shorter answer.',
+  timeout: 'The website response timed out. Check whether it received your message before sending again.',
+  request_aborted: 'The website request was cancelled or timed out. Check its browser before sending again.',
+});
+
+function safeAdapterError(error) {
+  if (typeof error?.code === 'string' && Object.hasOwn(ADAPTER_ERRORS, error.code)
+    && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599) {
+    return new ApiError(error.status, error.code, ADAPTER_ERRORS[error.code]);
+  }
+  return new ApiError(502, 'provider_error', 'The website request failed. Check the provider session and try again.');
+}
+
 function invalid(message) { throw new ApiError(400, 'invalid_request_error', message); }
 function isObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function keysOnly(value, allowed, label) {
@@ -376,8 +416,7 @@ export function createWebApiServer({ adapters, apiToken, host = '127.0.0.1', por
         try { text = await Promise.race([operation, aborted]); }
         catch (error) {
           if (error instanceof ApiError) throw error;
-          // Upstream errors can contain URLs, cookies, or session tokens.
-          throw new ApiError(502, 'provider_error', 'The website request failed. Check the provider session and try again.');
+          throw safeAdapterError(error);
         }
         if (!controller.signal.aborted && !response.destroyed) sendCompletion(response, request, validateOutput(text, request));
       } finally {

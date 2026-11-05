@@ -21,6 +21,7 @@ export function exportData(store) {
     providerId: c.providerId, model: c.model, createdAt: c.createdAt, updatedAt: c.updatedAt,
     messages: c.messages.filter(m => !m.transient).map(m => ({ role: m.role, content: m.content,
       createdAt: m.createdAt, ...(m.images?.length ? { images: m.images } : {}),
+      ...(m.files?.length ? { files: m.files.map(file => ({ name: file.name, content: file.content })) } : {}),
       ...(m.artifact ? { artifact: { name: m.artifact.name, content: m.artifact.content } } : {}) }))
   }));
   const settings = Object.fromEntries(publicSettings.map(key => [key, store.data.settings[key]]));
@@ -63,9 +64,10 @@ export function importData(store, raw) {
     const messages = c.messages.map(m => {
       if (!plain(m) || !['user', 'assistant', 'tool'].includes(m.role) || !text(m.content, 200000)) throw new Error('The backup contains an invalid message.');
       if (m.images !== undefined && (!Array.isArray(m.images) || m.images.length > 8 || !m.images.every(i => text(i, 12 * 1024 * 1024) && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-zA-Z0-9+/=]+$/.test(i)))) throw new Error('The backup contains an invalid image.');
+      if (m.files !== undefined && (!Array.isArray(m.files) || m.files.length > 4 || !m.files.every(file => plain(file) && text(file.name, 255) && text(file.content, 60000)) || m.files.reduce((sum, file) => sum + file.content.length, 0) > 60000)) throw new Error('The backup contains invalid file attachments.');
       if (m.artifact !== undefined && (!plain(m.artifact) || !text(m.artifact.name, 200) || !text(m.artifact.content, 200000))) throw new Error('The backup contains an invalid artifact.');
       return { id: randomUUID(), role: m.role, content: m.content, createdAt: new Date().toISOString(),
-        ...(m.images ? { images: m.images } : {}), ...(m.artifact ? { artifact: { name: m.artifact.name, content: m.artifact.content } } : {}) };
+        ...(m.images ? { images: m.images } : {}), ...(m.files ? { files: m.files.map(file => ({ name: file.name, content: file.content })) } : {}), ...(m.artifact ? { artifact: { name: m.artifact.name, content: m.artifact.content } } : {}) };
     });
     const providerId = providerMap.get(c.providerId) || next.providers.find(p => p.id === c.providerId)?.id || next.providers[0]?.id || '';
     next.conversations.push({ id: randomUUID(), title: c.title, model: c.model, providerId, projectId: null, mode: c.mode,

@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { decodeEvents, parseChatGPTStream, parseZaiStream, RESPONSE_BYTES } from '../bridges/multi-web2api/adapters/browser-stream.mjs';
-import { captureBrowserResponse, requestMatches, runBrowserTurn, openProfile } from '../bridges/multi-web2api/adapters/browser.mjs';
+import { captureBrowserResponse, requestMatches, runBrowserTurn, openProfile, visibleChallenge, waitForSecurityCheck } from '../bridges/multi-web2api/adapters/browser.mjs';
 import { capturedFromLiveAccount, editedReasoningGreeting, greeting, replacedReasoningGreeting, splitReasoningGreeting } from './fixtures/zai-protocol.mjs';
 
 const sse = values => values.map(value => `data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`).join('');
@@ -133,6 +133,43 @@ test('bounded capture cancellation and timeout close only the turn page', async 
   assert.equal(page.closed, true); assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
   const timedPage = new FixturePage(new FixtureSession('')); const timed = await captureBrowserResponse(timedPage, 'zai', 'wanted', undefined, { timeoutMs: 10 });
   await assert.rejects(timed.promise, { code: 'timeout' }); await timed.dispose(); assert.equal(timedPage.closed, true);
+});
+
+test('browser response failures preserve safe authentication, verification and quota codes', async () => {
+  for (const [status, expectedCode, expectedStatus] of [[401, 'authentication_required', 401], [403, 'verification_required', 403], [429, 'rate_limited', 429], [500, 'upstream_error', 502]]) {
+    const session = new FixtureSession(''); const page = new FixturePage(session);
+    const capture = await captureBrowserResponse(page, 'chatgpt', 'wanted');
+    emitRequest(session, 'chatgpt', 'wanted');
+    session.emit('Network.responseReceived', { requestId: 'fixture', response: { status, headers: {} } });
+    await assert.rejects(capture.promise, error => error.code === expectedCode && error.status === expectedStatus);
+    await capture.dispose(); assert.equal(session.eventNames().length, 0);
+  }
+});
+
+test('Cloudflare waiting page is detected before its challenge frame finishes loading', async () => {
+  const page = { title: async () => 'Just a moment...', locator: () => ({ first: () => ({ isVisible: async () => false }) }) };
+  assert.equal(await visibleChallenge(page), true);
+  page.title = async () => 'ChatGPT';
+  assert.equal(await visibleChallenge(page), false);
+});
+
+test('waiting for security only observes the page and stops after its bounded deadline', async () => {
+  let clock = 0, waits = 0;
+  const page = { title: async () => 'Just a moment...', locator: () => ({ first: () => ({ isVisible: async () => false }) }) };
+  await assert.rejects(waitForSecurityCheck(page, { now: () => clock, timeoutMs: 1000,
+    wait: async milliseconds => { clock += milliseconds; waits++; } }), { code: 'verification_required' });
+  assert.equal(clock, 1000); assert.equal(waits, 4);
+});
+
+test('browser profiles keep Chromium sandbox enabled during website verification', async t => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'gravity-sandbox-profile-'));
+  assert.equal(path.dirname(path.resolve(folder)), path.resolve(os.tmpdir()));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  let options;
+  const context = {};
+  assert.equal(await openProfile({ siteId: 'chatgpt', dataDir: folder, playwright: { chromium: { async launchPersistentContext(_folder, settings) { options = settings; return context; } } } }), context);
+  assert.equal(options.chromiumSandbox, true); assert.equal(options.headless, false);
+  assert.equal(options.ignoreDefaultArgs, undefined); assert.equal(options.userAgent, undefined);
 });
 
 test('request correlation requires exact origin, completion endpoint, POST and prompt', () => {

@@ -20,6 +20,7 @@ const stageLabels: Record<string, string> = {
   'starting-service': 'Starting the website service', 'discovering-models': 'Checking available website connections',
   'waiting-idle': 'Session saved. Waiting for existing chats to finish before reloading the service',
   'restoring-service': 'Restoring the previous working connection',
+  'waiting-for-security-check': 'Waiting for you to complete the website security check',
 };
 const websites: { id: WebsiteId; label: string; mark: string }[] = [
   { id: 'zai', label: 'Z.ai', mark: 'Z' },
@@ -28,10 +29,11 @@ const websites: { id: WebsiteId; label: string; mark: string }[] = [
   { id: 'qwen', label: 'Qwen', mark: 'Q' },
 ];
 
-export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectionDisabled }: {
+export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectionDisabled, onBrowserSetup }: {
   state: AppState; call: Invoke;
   onUseProvider?(providerId: string, model: string): Promise<void>;
   modelSelectionDisabled?: boolean;
+  onBrowserSetup?(): void;
 }) {
   const [snapshot, setSnapshot] = useState<SetupViewState>();
   const setup: SetupViewState | undefined = state.web2apiSetup || snapshot;
@@ -151,8 +153,9 @@ export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectio
     </div>}
 
     {setup?.message && !signingIn && !ready && !setup.error && <p data-testid="web2api-progress" className="web2api-progress" role="status">
-      {working && <Loader2 size={15} className="spin" />}{setup.stage && stageLabels[setup.stage] ? stageLabels[setup.stage] : setup.message}
+      {working && <Loader2 size={15} className="spin" />}{working && setup.stage && stageLabels[setup.stage] ? stageLabels[setup.stage] : setup.message}
     </p>}
+    {working && setup?.stage === 'waiting-for-security-check' && !setup.error && <div className="web2api-login" role="status" data-testid="web2api-security-check"><strong>Finish the security check in the open browser</strong><p>Keep this verification browser open. Gravity waits on the same page and continues when the website is ready. Cancel setup if the check keeps repeating.</p></div>}
     {ready && <div className="web2api-ready" data-testid="web2api-ready" role="status">
       <div><CheckCircle2 size={21} /><span><strong>{activeWebsite.label} service is ready</strong><small>Uses the model selected on the website</small></span></div>
       <p>{state.settings.bridgesAutoStart ? 'Starts automatically when Gravity opens.' : 'Automatic startup is off in advanced bridge settings.'} {responseCheck ? `Response ${responseCheck.ok ? 'verified' : 'test failed'} ${new Date(responseCheck.checkedAt).toLocaleString()}${responseCheck.durationMs !== undefined ? ` · ${(responseCheck.durationMs / 1000).toFixed(1)}s` : ''}.` : 'A response has not been tested by setup.'}</p>
@@ -173,6 +176,7 @@ export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectio
     </div>}
     {(notice || setup?.error) && <div data-testid="web2api-error" className="notice error" role="alert"><X size={16} /><span>{notice || setup?.error}</span></div>}
     {setup?.error && <div className="web2api-recovery">
+      {setup.recoveryAction === 'browser-connector' && onBrowserSetup && <button data-testid="web2api-browser-fallback" className="secondary-btn" disabled={working || !!command} onClick={onBrowserSetup}><Globe2 size={14} />Use your normal Chrome tab</button>}
       {setup.recoveryAction === 'choose-browser' && <button data-testid="web2api-choose-browser" className="secondary-btn" disabled={working || !!command} onClick={() => { browserChoice.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); browserChoice.current?.focus(); }}><Globe2 size={14} />Choose another browser</button>}
       {setup.recoveryAction === 'open-account' && <button data-testid="web2api-open-account" className="secondary-btn" disabled={working || !!command} onClick={async () => {
         setCommand('account'); setNotice(undefined);
@@ -180,7 +184,7 @@ export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectio
         catch (error) { if (alive.current) setNotice(errorText(error)); }
         finally { if (alive.current) setCommand(''); }
       }}><ArrowUpRight size={14} />Open website account</button>}
-      {!working && setup.recoveryAction !== 'wait' && <button className="secondary-btn" disabled={!!command || checking || !setup.available} onClick={() => void connect(setup.recoveryAction === 'open-account')}><RefreshCw size={14} />Try connection again</button>}
+      {!working && !['wait', 'browser-connector'].includes(setup.recoveryAction || '') && <button className="secondary-btn" disabled={!!command || checking || !setup.available} onClick={() => void connect(setup.recoveryAction === 'open-account')}><RefreshCw size={14} />Try connection again</button>}
     </div>}
     <details className="advanced web2api-diagnostics"><summary>Connection details & diagnostics</summary>
       {setup?.defaultModel && <p className="field-help">Connection model ID: <code>{setup.defaultModel}</code></p>}

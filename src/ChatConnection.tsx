@@ -38,6 +38,9 @@ export default function ChatConnection({ provider, model, state, conversation, c
     issue = runtime?.error || (!runtime?.running && !starting ? 'Start or check this adapter to connect.' : '');
   }
   const failure = failed ? conversation?.failure?.message : '';
+  const serviceStatus = status;
+  if (failed) status = 'Last request failed';
+  const normalChrome = !browser && website && state.providers.find(p => p.managedBy === 'browser-connector' && p.models.includes(`${website}-web`));
   const lastTest = provider.lastTest?.model === model ? provider.lastTest : undefined;
   const action = async (name: string, fn: () => Promise<unknown>) => {
     setBusy(name); setNotice('');
@@ -64,11 +67,12 @@ export default function ChatConnection({ provider, model, state, conversation, c
   return <div className={`chat-connection ${failed || issue || lastTest?.ok === false ? 'needs-attention' : ''}`} data-testid="chat-connection">
     <details className="chat-connection-disclosure" data-testid="chat-connection-details">
       <summary className="chat-connection-summary">
-        <span className="chat-connection-status" data-testid="chat-connection-status" aria-live="polite">{starting ? <Loader2 size={12} className="spin" /> : <span className={`status-dot ${!issue && (browser || runtime?.state === 'ready') ? 'online' : ''}`} />}<span>{status}</span>{capabilities && <small>{capabilities.images ? 'Images supported' : 'Text only'}</small>}</span>
+        <span className="chat-connection-status" data-testid="chat-connection-status" aria-live="polite">{starting ? <Loader2 size={12} className="spin" /> : <span className={`status-dot ${!failed && !issue && (browser || runtime?.state === 'ready') ? 'online' : ''}`} />}<span>{status}</span>{capabilities && <small>{capabilities.images ? 'Images supported' : 'Text only'}</small>}</span>
         <span className="chat-connection-more">Connection details<ChevronDown size={12} /></span>
       </summary>
       <div className="chat-connection-body">
         <div className="chat-connection-heading"><Cpu size={12} /><span><strong>{provider.name}</strong> · {modelLabel(model) || 'Choose a model'}</span><button type="button" data-testid="chat-change-provider" className="text-btn" onClick={onSettings}><Settings2 size={12} />Change</button></div>
+        {failed && <p className="field-help">Service: {serviceStatus}. A running service does not establish a successful website response.</p>}
         {website && <p className="field-help">Uses the model selected on {websiteNames[website]}.</p>}
         {capabilities && (capabilities.streaming === 'buffered' || capabilities.streaming === 'live' || capabilities.toolMode === 'emulated') && <p className="field-help">{capabilities.streaming === 'buffered' ? 'The reply appears when complete.' : capabilities.streaming === 'live' ? 'Responses stream as they arrive.' : ''}{capabilities.toolMode === 'emulated' ? ' Project actions depend on the model returning a valid action.' : ''}</p>}
         {lastTest ? <p className={`chat-response-check ${lastTest.ok ? '' : 'error'}`} data-testid="chat-last-response-check">{lastTest.ok ? <CheckCircle2 size={12} /> : <XCircle size={12} />}Response {lastTest.ok ? 'verified' : 'test failed'} · {new Date(lastTest.checkedAt).toLocaleString()}{lastTest.durationMs !== undefined && ` · ${(lastTest.durationMs / 1000).toFixed(1)}s`}</p> : <p className="field-help">No response test recorded for this model. Test it in connection settings.</p>}
@@ -78,6 +82,7 @@ export default function ChatConnection({ provider, model, state, conversation, c
     {(failed || issue) && <div className="chat-connection-detail">
       {failure && <p role="alert">{failure}</p>}{issue && <p>{issue}</p>}{failed && !failure && <p>The last request failed. Prepare the connection before sending again.</p>}
       <div className="chat-connection-actions">
+        {failed && normalChrome && website !== 'claude' && <button type="button" className="secondary-btn" data-testid="chat-normal-chrome" disabled={disabled || !!busy} onClick={() => { if (connector.running && connector.paired && connector.extension?.compatible === true && !connector.error && site?.connected && !site.busy && !site.error) void action('switch', () => onUseProvider(normalChrome.id, `${website}-web`)); else onBrowserSetup(); }}><Globe2 size={12} />Use {websiteNames[website!]} in normal Chrome</button>}
         {(browser || websiteService || profile) && <button type="button" className="secondary-btn" data-testid="chat-prepare-connection" disabled={disabled || !!busy || starting} onClick={() => void prepare()}>{busy === 'prepare' ? <Loader2 size={12} className="spin" /> : runtime?.running || connector.running && browser ? <RefreshCw size={12} /> : <Play size={12} />}{websiteService && !savedSession ? 'Connect website' : browser && connector.running ? 'Open website' : failed ? 'Prepare connection' : 'Start connection'}</button>}
         {websiteService && savedSession && <button type="button" className="secondary-btn" data-testid="chat-sign-in-again" disabled={disabled || !!busy || starting} onClick={() => void action('login', () => { onWebsiteSetup(); return call('web2api:connect', { siteId: website, forceLogin: true }); })}><Globe2 size={12} />Sign in again</button>}
         {offerChrome && <button type="button" className="secondary-btn" data-testid="use-chrome-claude" disabled={disabled || !!busy} onClick={() => void action('switch', () => onUseProvider(chrome.id, 'claude-web'))}>Use Claude in Chrome</button>}

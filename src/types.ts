@@ -2,11 +2,12 @@ export interface Project { id: string; name: string; path: string; createdAt: st
 export type PermissionMode = 'ask' | 'auto-edits' | 'full';
 export type AgentMode = 'chat' | 'plan' | 'build';
 export interface Approval { id: string; type: 'write' | 'command'; path?: string; content?: string; original?: string; command?: string; status: 'pending' | 'approved' | 'rejected'; autoApproved?: boolean; permissionMode?: PermissionMode }
-export interface Message { id: string; role: 'user' | 'assistant' | 'tool'; content: string; images?: string[]; createdAt: string; toolName?: string; approval?: Approval; artifact?: { name: string; content: string } }
+export interface Message { id: string; role: 'user' | 'assistant' | 'tool'; content: string; images?: string[]; files?: { name: string; content: string }[]; createdAt: string; toolName?: string; approval?: Approval; artifact?: { name: string; content: string } }
 export interface RequestProgress { startedAt: string; phase: string; receivedAt?: string; finishedAt?: string; elapsedMs?: number }
 export interface ConversationFailure { message: string; code?: string; status?: number; retrySafe?: boolean; at?: string }
 export interface Conversation { id: string; title: string; projectId?: string; providerId?: string; model: string; mode: AgentMode; permissionMode?: PermissionMode; messages: Message[]; status: 'idle' | 'running' | 'error'; request?: RequestProgress; failure?: ConversationFailure; createdAt: string; updatedAt: string; archived?: boolean }
 export interface ProviderCapabilities { images: boolean; tools: boolean; streaming?: 'live' | 'buffered' | 'unknown'; toolMode?: 'emulated' | 'native' }
+export interface PickedFile { id: string; name: string; bytes: number; characters: number; lines: number }
 export interface WorkspaceContextReference { projectId: string; path: string; startLine?: number; endLine?: number; revision?: string }
 export interface WorkspaceContext extends WorkspaceContextReference { label: string; content: string; startLine: number; endLine: number; revision: string }
 export interface ResponseCheck { ok: boolean; model: string; checkedAt: string; durationMs?: number; message?: string; code?: string }

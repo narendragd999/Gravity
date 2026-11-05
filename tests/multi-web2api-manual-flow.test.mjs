@@ -6,19 +6,20 @@ import path from 'node:path';
 import { loginBrowserProfile } from '../bridges/multi-web2api/cli.mjs';
 import { loadConfig } from '../bridges/multi-web2api/config.mjs';
 
-async function fixture(t, { url = 'https://chat.z.ai/', history = 0, draft = '', directToken, cookieToken } = {}) {
+async function fixture(t, { url = 'https://chat.z.ai/', history = 0, draft = '', directToken, cookieToken, challenge = false } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gravity-manual-flow-'));
   assert.equal(path.dirname(path.resolve(dataDir)), path.resolve(os.tmpdir()));
   t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
   const config = await loadConfig(dataDir, {});
-  const events = [], logs = [];
+  const events = [], logs = [], security = { visible: challenge, closed: false };
   let observedRequest;
   const page = {
     async goto(value) { events.push(['goto', value]); if (directToken && observedRequest) observedRequest({ url: () => `${new URL(url).origin}/api/fixture`, allHeaders: async () => ({ authorization: `Bearer ${directToken}` }) }); }, url: () => url,
     async reload() { await this.goto(url); },
+    isClosed: () => security.closed,
     locator(selector) {
       return { count: async () => history, first: () => ({
-        isVisible: async () => !/iframe|challenge|captcha/i.test(selector), isEnabled: async () => true,
+        isVisible: async () => /iframe|challenge|captcha/i.test(selector) ? security.visible : true, isEnabled: async () => true,
         evaluate: async () => draft,
       }) };
     },
@@ -31,8 +32,55 @@ async function fixture(t, { url = 'https://chat.z.ai/', history = 0, draft = '',
     createInput: () => ({ async question(text) { events.push(['question', text]); }, close() { events.push('input-close'); } }),
     log: text => logs.push(text), closeTimeoutMs: 10,
   };
-  return { config, dataDir, dependencies, events, logs };
+  return { config, dataDir, dependencies, events, logs, security };
 }
+
+test('ChatGPT security verification waits on the same browser page for user completion without reopening', async t => {
+  const f = await fixture(t, { url: 'https://chatgpt.com/', challenge: true });
+  let clock = 0, waits = 0; const stages = [];
+  await loginBrowserProfile('chatgpt', f.config, f.dataDir, { ...f.dependencies, autoContinue: true,
+    now: () => clock, securityCheckTimeoutMs: 1000,
+    wait: async milliseconds => { clock += milliseconds; if (++waits === 2) f.security.visible = false; },
+    report: stage => stages.push(stage) });
+  assert.ok(stages.includes('waiting-for-security-check'));
+  assert.equal((await loadConfig(f.dataDir, {})).providers.chatgpt.enabled, true);
+  assert.equal(f.events.filter(event => event[0] === 'manual-open').length, 1);
+  assert.equal(f.events.filter(event => event[0] === 'verify-open').length, 1);
+  assert.equal(f.events.filter(event => event[0] === 'goto').length, 1);
+  assert.equal(f.events.filter(event => event === 'context-close').length, 1);
+  assert.equal(f.logs.filter(text => text.includes('waits on this page')).length, 1);
+});
+
+test('persistent ChatGPT security checks time out once and offer normal Chrome recovery without saving', async t => {
+  const f = await fixture(t, { url: 'https://chatgpt.com/', challenge: true });
+  let clock = 0; const stages = [];
+  await assert.rejects(loginBrowserProfile('chatgpt', f.config, f.dataDir, { ...f.dependencies, autoContinue: true,
+    now: () => clock, securityCheckTimeoutMs: 1000, wait: async milliseconds => { clock += milliseconds; },
+    report: (stage, type, code) => stages.push({ stage, type, code }) }), error => error.code === 'security_check_required' && error.recoveryAction === 'browser-connector');
+  assert.equal((await loadConfig(f.dataDir, {})).providers.chatgpt.enabled, false);
+  assert.deepEqual(stages.at(-1), { stage: 'waiting-for-security-check', type: 'error', code: 'security_check_required' });
+  assert.equal(f.events.filter(event => event[0] === 'goto').length, 1);
+  assert.equal(f.events.filter(event => event[0] === 'manual-open').length, 1);
+  assert.equal(f.events.filter(event => event[0] === 'verify-open').length, 1);
+  assert.equal(f.events.filter(event => event === 'context-close').length, 1);
+});
+
+test('security-check cancellation closes only the verification context and saves no account', async t => {
+  const f = await fixture(t, { url: 'https://chatgpt.com/', challenge: true }), controller = new AbortController();
+  await assert.rejects(loginBrowserProfile('chatgpt', f.config, f.dataDir, { ...f.dependencies, autoContinue: true,
+    signal: controller.signal, wait: async () => { controller.abort(new Error('fixture cancellation')); } }), { code: 'setup_cancelled' });
+  assert.equal((await loadConfig(f.dataDir, {})).providers.chatgpt.enabled, false);
+  assert.equal(f.events.filter(event => event[0] === 'goto').length, 1);
+  assert.ok(f.events.includes('context-close'));
+});
+
+test('closing verification browser during a challenge stops instead of repeatedly reopening it', async t => {
+  const f = await fixture(t, { url: 'https://chatgpt.com/', challenge: true });
+  await assert.rejects(loginBrowserProfile('chatgpt', f.config, f.dataDir, { ...f.dependencies, autoContinue: true,
+    wait: async () => { f.security.closed = true; } }), { code: 'browser_closed_abnormally' });
+  assert.equal((await loadConfig(f.dataDir, {})).providers.chatgpt.enabled, false);
+  assert.equal(f.events.filter(event => event[0] === 'verify-open').length, 1);
+});
 
 test('manual login waits for browser closure, verifies an empty chat and saves only selected provider', async t => {
   const f = await fixture(t);

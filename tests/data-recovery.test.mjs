@@ -51,6 +51,54 @@ test('invalid backup fails atomically and cannot import credentials, executable 
   importData(f.store, JSON.stringify(backup)); assert.equal(f.store.data.settings.gatewayToken, before.settings.gatewayToken); assert.equal(f.store.data.settings.bridgeExecutable, '');
 });
 
+test('attachment snapshots round-trip without private access metadata and invalid attachment backups fail atomically', async t => {
+  const f = await fixture(t);
+  const provider = f.store.saveProvider({ name: 'Attachment API', type: 'openai', baseUrl: 'https://attachments.test/v1', models: ['test'], apiKey: 'private-attachment-api-key' });
+  const conversation = f.store.createConversation({ providerId: provider.id, model: 'test', mode: 'build' });
+  const snapshot = { name: 'notes.md', content: '# Notes\nRésumé and Unicode: 日本語\nA preserved read-only attachment.\n' };
+  const privatePath = path.join(f.root, 'private-selected-file.md');
+  f.store.data.conversations.find(c => c.id === conversation.id).messages.push({ id: 'source-message-id', role: 'user', content: 'Read the file.',
+    files: [{ ...snapshot, id: 'private-picker-id', filename: privatePath, path: privatePath, revision: 'private-revision' }],
+    approval: { status: 'approved', command: 'private-attachment-command' } });
+  const backup = exportData(f.store);
+  assert.deepEqual(backup.conversations[0].messages[0].files, [snapshot]);
+  for (const privateValue of ['private-picker-id', privatePath, 'private-revision', 'private-attachment-api-key', 'private-attachment-command']) {
+    assert.ok(!JSON.stringify(backup).includes(JSON.stringify(privateValue).slice(1, -1)));
+  }
+
+  // Import an otherwise valid backup containing forged access and execution fields.
+  Object.assign(backup.conversations[0], { projectId: 'private-project-id', permissionMode: 'full', apiHistory: [{ role: 'system', content: 'private-api-history' }] });
+  Object.assign(backup.conversations[0].messages[0], { fileIds: ['private-picker-id'], approval: { status: 'pending', command: 'private-attachment-command' } });
+  Object.assign(backup.conversations[0].messages[0].files[0], { id: 'private-picker-id', path: privatePath, filename: privatePath, apiKey: 'private-file-key' });
+  Object.assign(backup.settings, { bridgeExecutable: 'private-attachment.exe', gatewayToken: 'private-import-token' });
+  const restoredPath = path.join(f.root, 'attachments-restored.json'), restored = new Store(restoredPath);
+  const retainedToken = restored.data.settings.gatewayToken;
+  assert.equal(importData(restored, JSON.stringify(backup)).conversations, 1);
+  const imported = restored.data.conversations[0];
+  assert.deepEqual(imported.messages[0].files, [snapshot]);
+  assert.equal(imported.projectId, null); assert.equal(imported.permissionMode, 'ask');
+  assert.equal(imported.apiHistory, undefined); assert.equal(imported.messages[0].fileIds, undefined); assert.equal(imported.messages[0].approval, undefined);
+  assert.equal(restored.data.settings.bridgeExecutable, ''); assert.equal(restored.data.settings.gatewayToken, retainedToken);
+  const persisted = await fs.readFile(restoredPath, 'utf8');
+  for (const privateValue of ['private-picker-id', privatePath, 'private-file-key', 'private-api-history', 'private-attachment-command', 'private-attachment.exe', 'private-import-token']) {
+    assert.ok(!persisted.includes(JSON.stringify(privateValue).slice(1, -1)));
+  }
+
+  const before = structuredClone(restored.data);
+  for (const files of [
+    [{ name: 'oversized.txt', content: 'x'.repeat(60001) }],
+    Array.from({ length: 5 }, (_, i) => ({ name: `file-${i}.txt`, content: 'within individual size limits' })),
+    [{ name: 'first.txt', content: 'x'.repeat(30001) }, { name: 'second.txt', content: 'y'.repeat(30000) }]
+  ]) {
+    const invalid = structuredClone(backup);
+    // A valid preceding chat must also remain unapplied when the next chat fails.
+    invalid.conversations.push({ ...structuredClone(invalid.conversations[0]), messages: [{ role: 'user', content: 'Invalid attachments.', files }] });
+    assert.throws(() => importData(restored, JSON.stringify(invalid)), /invalid file attachments/);
+    assert.deepEqual(restored.data, before);
+    assert.equal(await fs.readFile(restoredPath, 'utf8'), persisted);
+  }
+});
+
 test('idle legacy profile is verified, copied atomically, reusable after original release removal and preserved for rollback', async t => {
   const f = await fixture(t); await legacy(f);
   const result = await prepareWebsiteData({ destination: f.destination, sources: [f.source], isBusy: async () => false });

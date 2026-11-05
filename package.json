@@ -1,6 +1,6 @@
 {
   "name": "gravity",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "description": "A portable desktop agent workspace with browser connections and a built-in local API.",
   "author": "Gravity contributors",
@@ -44,15 +44,44 @@
   "build": {
     "appId": "dev.antigravity.studio",
     "productName": "Gravity",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "electron/**/*", "browser-extension/**/*", "bridges/multi-web2api/login-events.mjs", "package.json", "build/icon.ico", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "!node_modules/**/*"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "browser-extension/**/*",
+      "bridges/multi-web2api/login-events.mjs",
+      "package.json",
+      "build/icon.ico",
+      "LICENSE",
+      "THIRD_PARTY.md",
+      "THIRD_PARTY_LICENSES.txt",
+      "!node_modules/**/*"
+    ],
     "extraResources": [
-      { "from": "release/web2api-build/runtime", "to": "web2api/runtime" },
-      { "from": "release/web2api-build/bridge", "to": "web2api/bridge" },
-      { "from": "release/web2api-build/bridge/node_modules/playwright-core", "to": "web2api/bridge/node_modules/playwright-core", "filter": ["**/*"] }
+      {
+        "from": "release/web2api-build/runtime",
+        "to": "web2api/runtime"
+      },
+      {
+        "from": "release/web2api-build/bridge",
+        "to": "web2api/bridge"
+      },
+      {
+        "from": "release/web2api-build/bridge/node_modules/playwright-core",
+        "to": "web2api/bridge/node_modules/playwright-core",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "npmRebuild": false,
-    "win": { "target": "portable", "icon": "build/icon.ico", "signExecutable": false },
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.ico",
+      "signExecutable": false
+    },
     "artifactName": "Gravity-${version}-${arch}.${ext}"
   }
 }

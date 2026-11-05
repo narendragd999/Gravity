@@ -60,10 +60,29 @@ async function firstReady(page, selectors) {
 }
 
 export async function visibleChallenge(page) {
-  for (const selector of ['iframe[src*="challenges.cloudflare.com"]', 'iframe[title*="challenge" i]', '#challenge-running', '[data-testid="captcha"]']) {
+  for (const selector of ['iframe[src*="challenges.cloudflare.com"]', 'iframe[title*="challenge" i]', '#challenge-running', '#challenge-stage', '#challenge-form', '[data-testid="captcha"]']) {
     if (await page.locator(selector).first().isVisible().catch(() => false)) return true;
   }
+  const title = await page.title?.().catch(() => '') || '';
+  if (/^Just a moment\.{0,3}$/i.test(title.trim())) return true;
   return false;
+}
+
+// Only observe the verification page. The user completes its security check;
+// the bridge never clicks it, reloads it, changes browser security, or retries it.
+export async function waitForSecurityCheck(page, { signal, timeoutMs = 120000, intervalMs = 300, now = Date.now, wait = pause, onWait = () => {} } = {}) {
+  signal?.throwIfAborted();
+  if (!await visibleChallenge(page)) return;
+  onWait();
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    signal?.throwIfAborted();
+    if (page.isClosed?.()) throw bridgeError('The account browser closed during its security check.', 503, 'browser_closed_abnormally');
+    await wait(Math.min(intervalMs, Math.max(1, deadline - now())), undefined, { signal });
+    signal?.throwIfAborted();
+    if (!await visibleChallenge(page)) return;
+  }
+  throw bridgeError('The website is still requesting security verification. Complete it yourself in the open browser, or use Browser Connector with your normal signed-in Chrome tab.', 503, 'verification_required');
 }
 
 export function requestMatches(request, siteId, prompt) {
@@ -104,7 +123,11 @@ export async function captureBrowserResponse(page, siteId, prompt, signal, { tim
   const onResponse = event => {
     if (event.requestId !== requestId || settled) return;
     const response = event.response;
-    if (response.status < 200 || response.status >= 300) { fail(bridgeError(`${site.label} returned HTTP ${response.status}. Check its login browser before retrying.`, response.status === 429 ? 429 : 502)); return; }
+    if (response.status < 200 || response.status >= 300) {
+      const status = response.status === 401 ? 401 : response.status === 403 ? 403 : response.status === 429 ? 429 : 502;
+      const code = status === 401 ? 'authentication_required' : status === 403 ? 'verification_required' : status === 429 ? 'rate_limited' : 'upstream_error';
+      fail(bridgeError(`${site.label} returned HTTP ${response.status}. Check its account browser before retrying.`, status, code)); return;
+    }
     const headers = Object.fromEntries(Object.entries(response.headers || {}).map(([key, value]) => [key.toLowerCase(), String(value)]));
     if (!(headers['content-type'] || response.mimeType || '').toLowerCase().startsWith('text/event-stream')) { fail(bridgeError(`${site.label} did not return an event stream. Complete any login/security check in its browser.`, 503, 'login_required')); return; }
     if (headers['content-length'] && (!/^\d+$/.test(headers['content-length']) || Number(headers['content-length']) > RESPONSE_BYTES)) { fail(bridgeError('Website response exceeded the supported size.', 502, 'response_too_large'), true); return; }
@@ -117,7 +140,7 @@ export async function captureBrowserResponse(page, siteId, prompt, signal, { tim
   };
   const onFinished = event => {
     if (event.requestId !== requestId || settled) return;
-    if (!headersReady) { fail(bridgeError('The website response could not be correlated with this request.')); return; }
+    if (!headersReady) { fail(bridgeError('The website response could not be correlated with this request.', 502, 'incomplete_response')); return; }
     void session.send('Network.getResponseBody', { requestId }).then(result => {
       if (settled) return;
       const bytes = result.base64Encoded ? Buffer.from(result.body, 'base64') : Buffer.from(result.body, 'utf8');
@@ -155,11 +178,16 @@ export async function runBrowserTurn(page, siteId, prompt, signal, options = {})
   let capture;
   try {
     await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const deadline = Date.now() + 30000;
+    const readyTimeoutMs = options.readyTimeoutMs ?? 30000;
+    let deadline = Date.now() + readyTimeoutMs, securityUntil;
     let composer;
     while (Date.now() < deadline) {
       signal?.throwIfAborted();
-      if (await visibleChallenge(page)) throw bridgeError(`${site.label} needs a manual security check. Run npm run login -- ${siteId} and complete it yourself.`, 503, 'login_required');
+      if (await visibleChallenge(page)) {
+        securityUntil ??= Date.now() + (options.securityCheckTimeoutMs ?? 120000);
+        await waitForSecurityCheck(page, { signal, timeoutMs: Math.max(0, securityUntil - Date.now()) });
+        deadline = Date.now() + readyTimeoutMs;
+      }
       composer = await firstReady(page, site.composer);
       if (composer) break;
       await pause(300, undefined, { signal });

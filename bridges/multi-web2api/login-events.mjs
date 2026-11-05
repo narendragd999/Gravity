@@ -1,5 +1,5 @@
 export const LOGIN_EVENT_PREFIX = 'GRAVITY_LOGIN_EVENT ';
-export const LOGIN_STAGES = Object.freeze(['opening-browser', 'waiting-for-sign-in', 'waiting-for-browser-close', 'releasing-profile', 'opening-profile', 'navigating', 'checking-session', 'saving-session', 'starting-service', 'discovering-models', 'waiting-idle', 'restoring-service', 'complete']);
+export const LOGIN_STAGES = Object.freeze(['opening-browser', 'waiting-for-sign-in', 'waiting-for-browser-close', 'releasing-profile', 'opening-profile', 'navigating', 'checking-session', 'waiting-for-security-check', 'saving-session', 'starting-service', 'discovering-models', 'waiting-idle', 'restoring-service', 'complete']);
 export const LOGIN_ERRORS = Object.freeze({
   browser_missing: ['Install or choose a supported Chrome or Edge browser.', 'choose-browser'],
   browser_launch_failed: ['The account browser could not open. Close its separate windows and try again.', 'open-account'],
@@ -10,7 +10,7 @@ export const LOGIN_ERRORS = Object.freeze({
   browser_closed_abnormally: ['The account browser did not close normally. Reopen it and finish the sign-in check.', 'open-account'],
   browser_close_timeout: ['The account browser is still open. Finish signing in and close its separate windows.', 'open-account'],
   sign_in_required: ['The saved browser reopened a sign-in page. Finish signing in to this account.', 'open-account'],
-  security_check_required: ['The website needs a security check. Complete it in the normal account browser.', 'open-account'],
+  security_check_required: ['The website kept requesting security verification. Use Browser Connector with your normal signed-in Chrome tab, or choose another browser. Your saved sign-in is kept.', 'browser-connector'],
   oauth_rejected: ['Google did not accept this sign-in browser. Reopen normal-browser sign-in or use Browser Connector.', 'open-account'],
   new_chat_required: ['The website restored an existing conversation. Open a new, empty chat in its account browser.', 'open-account'],
   draft_present: ['The website restored a draft. Save or clear it in the account browser, then try again.', 'open-account'],

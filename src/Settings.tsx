@@ -92,7 +92,7 @@ export default function Settings({ state, call, onClose, initialPage = 'setup', 
       <div className="settings-about"><div className="small-mark">G</div><strong>Gravity</strong>{state.appVersion && <span>Version {state.appVersion}</span>}<span>Your workspace. Your models.</span></div>
     </aside><div className="settings-body"><button className="icon-btn modal-close" onClick={onClose} aria-label="Close settings"><X size={20} /></button>
       {page === 'setup' && <><div className="section-eyebrow">WELCOME TO GRAVITY</div><h2>Connect your website. Start chatting.</h2><p className="muted">Start with a website below. Gravity handles saved sessions, connection details, and automatic startup.</p>
-        <Web2ApiSetup state={state} call={call} onUseProvider={onUseProvider} modelSelectionDisabled={modelSelectionDisabled} />
+        <Web2ApiSetup state={state} call={call} onBrowserSetup={() => changePage('browser')} onUseProvider={onUseProvider} modelSelectionDisabled={modelSelectionDisabled} />
         <h3 className="settings-other-heading">Other connection options</h3>
         <div className="setup-choice-grid">
           <button className="setup-choice" data-testid="setup-browser" onClick={() => changePage('browser')}><Chrome size={26} /><span className="optional">Claude, Gemini & existing Chrome tabs</span><strong>Use the Chrome extension</strong><span>Connect website tabs in your usual Chrome profile. This route needs one extension installation and pairing.</span><span className="text-btn">Open extension setup <ChevronRight size={15} /></span></button>
