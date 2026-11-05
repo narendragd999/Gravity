@@ -16,7 +16,7 @@ const builderRequire = createRequire(import.meta.resolve('electron-builder'));
 const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'));
 const asar = libraryRequire('@electron/asar');
 const archive = path.join(root, 'release/win-unpacked/resources/app.asar');
-const forbidden = /(?:^|\/)(?:cookie\.txt|cookies\.(?:txt|json)|state\.json|bridge-runtime\.json|credentials\.json|auth\.json|config\.json|tests|node_modules|\.git|\.data|\.downloads|__pycache__|\.env[^/]*)(?:\/|$)|\.(?:log|pyc|pyo|pem|key|p12|pfx)$/i;
+const forbidden = /(?:^|\/)(?:cookie[^/]*\.(?:txt|json)|state\.json|bridge-runtime\.json|credentials\.json|auth\.json|config\.json|tests|node_modules|\.git|\.data|\.downloads|__pycache__|\.env[^/]*)(?:\/|$)|\.(?:log|pyc|pyo|pem|key|p12|pfx)$/i;
 
 function regularFile(relative) {
   const filename = path.join(root, relative);
@@ -39,7 +39,7 @@ function collect(directory) {
 
 const expected = [
   ...collect('dist'), ...collect('electron'), ...collect('browser-extension'), 'build/icon.ico',
-  'LICENSE', 'THIRD_PARTY.md', 'THIRD_PARTY_LICENSES.txt', 'package.json',
+  'LICENSE', 'THIRD_PARTY.md', 'THIRD_PARTY_LICENSES.txt', 'package.json', 'bridges/multi-web2api/login-events.mjs',
 ].sort();
 const packaged = [];
 for (const entry of asar.listPackage(archive)) {
@@ -67,6 +67,28 @@ const extensionManifest = JSON.parse(asar.extractFile(archive, path.normalize('b
 assert.equal(extensionManifest.name, 'Gravity Browser Connector');
 assert.ok(packaged.includes(`browser-extension/${extensionManifest.background.service_worker}`), 'Bundled extension worker is missing');
 assert.ok(packaged.includes(`browser-extension/${extensionManifest.action.default_popup}`), 'Bundled extension popup is missing');
+
+// The website service is outside ASAR because its bundled Node runtime executes
+// it directly. Compare the curated companion files byte-for-byte; .data remains
+// private and is never copied into the executable.
+function externalFiles(directory, prefix = '') {
+  const result = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const filename = path.join(directory, entry.name);
+    assert.equal(fs.lstatSync(filename).isSymbolicLink(), false, 'Website resources must not follow links');
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    assert.ok(!/(?:^|\/)(?:\.data|\.env[^/]*|cookie[^/]*\.(?:json|txt)|state\.json|config\.json|credentials\.json)(?:\/|$)/i.test(relative), 'Private website data must not be bundled');
+    if (entry.isDirectory()) result.push(...externalFiles(filename, relative)); else result.push(relative);
+  }
+  return result.sort();
+}
+for (const directory of ['runtime', 'bridge']) {
+  const source = path.join(root, 'release', 'web2api-build', directory);
+  const bundled = path.join(root, 'release', 'win-unpacked', 'resources', 'web2api', directory);
+  const inventory = externalFiles(source);
+  assert.deepEqual(externalFiles(bundled), inventory, 'Bundled website service inventory differs');
+  for (const relative of inventory) assert.ok(fs.readFileSync(path.join(source, relative)).equals(fs.readFileSync(path.join(bundled, relative))), `Website resource differs: ${directory}/${relative}`);
+}
 
 // Verification must not silently replace an outdated source archive.
 const pythonCandidates = process.env.PYTHON ? [process.env.PYTHON] : ['python', 'python3'];

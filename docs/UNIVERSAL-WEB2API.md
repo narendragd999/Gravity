@@ -1,5 +1,7 @@
 # Universal Web2API connections
 
+For standalone DeepSeek, Qwen, ChatGPT, and Z.ai without Gravity's extension, use the [new account bridge](MULTI-WEB2API.md). It runs beside your Gemini/Claude adapters and connects through the managed/external profiles below. Normal OpenAI-compatible model providers already accept arbitrary backend model IDs.
+
 **Version 1.3.0 adds a simpler browser connection:** use your existing Chrome logins through the included companion extension. It provides adapters for all six requested websites without Python, Git, configuration files, or cookie exports. See [Browser connector](BROWSER-CONNECTOR.md) for the one-time Chrome installation, pairing, and compatibility limits. The process-based setup below remains available for independently installed API backends.
 
 Gravity can manage multiple bridge processes and expose their models through one local API. It supports OpenAI Chat Completions, Anthropic Messages, and Google Gemini API formats. A custom model ID is passed to its selected backend; the backend must actually support that model.

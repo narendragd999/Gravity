@@ -31,6 +31,7 @@ def excluded(relative):
     """Inspect names only; never read or include known credential/runtime files."""
     return any(
         part.lower() in EXCLUDED_NAMES
+        or re.fullmatch(r'cookie[^/]*\.(?:txt|json)', part.lower()) is not None
         or part.lower().startswith('.env')
         or Path(part).suffix.lower() in EXCLUDED_SUFFIXES
         for part in relative.parts

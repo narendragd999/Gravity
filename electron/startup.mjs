@@ -25,7 +25,7 @@ export function importEnvironmentProviders(store, env = process.env) {
   }
 }
 
-export async function startConfiguredServices({ store, gateway, browserConnector, bridge, bridges, gatewayPort, onChange = () => {} }) {
+export async function startConfiguredServices({ store, gateway, browserConnector, bridge, bridges, gatewayPort, startBridge = profile => bridges.start(profile.id), onChange = () => {} }) {
   const settings = store.data.settings;
   const operations = [];
   const start = (service, operation) => operations.push(Promise.resolve().then(operation).catch(error => {
@@ -37,7 +37,7 @@ export async function startConfiguredServices({ store, gateway, browserConnector
   if (settings.gatewayAutoStart) start(gateway, () => gateway.start({ port: gatewayPort ?? settings.gatewayPort, token: settings.gatewayToken }));
   if (settings.browserAutoStart) start(browserConnector, () => browserConnector.start());
   const profiles = settings.bridgesAutoStart ? store.data.bridgeProfiles : [];
-  for (const profile of profiles) start(null, () => bridges.start(profile.id));
+  for (const profile of profiles) start(null, () => startBridge(profile));
   const geminiProvider = store.data.providers.find(provider => provider.id === 'gemini-local' || provider.name === 'Gemini Web2API');
   const geminiHasProfile = profiles.some(profile => {
     if (profile.providerId === geminiProvider?.id) return true;

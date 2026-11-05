@@ -1,0 +1,185 @@
+// Gravity's pure prompt/tool protocol, copied from its MIT-licensed core.
+// Kept local so this bridge does not require extension files or processes.
+const siteById = id => ['deepseek', 'qwen', 'chatgpt', 'zai'].includes(id);
+
+function textContent(content) {
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content) && content.every(part => part?.type === 'text' && typeof part.text === 'string')) return content.map(part => part.text).join('\n');
+  throw new Error('Browser-connected chats currently support text messages only. Use a direct API for images or attachments.');
+}
+export function formatJobPrompt(job) {
+  if (!job || typeof job.id !== 'string' || !job.id.trim() || job.id.includes('\0') || job.id.length > 200 || !siteById(job.siteId)) throw new Error('Invalid browser job or unsupported site.');
+  if (!Array.isArray(job.messages) || !job.messages.length || job.messages.length > 256) throw new Error('Browser job must contain 1–256 messages.');
+  const transcript = job.messages.map(message => {
+    if (!message || !['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role)) throw new Error('Browser job contains an unsupported message role.');
+    let content = textContent(message.content);
+    if (message.tool_calls !== undefined) {
+      if (!Array.isArray(message.tool_calls)) throw new Error('Previous tool calls must be an array.');
+      content += `\nPrevious tool calls: ${JSON.stringify(message.tool_calls)}`;
+    }
+    return `[${message.role.toUpperCase()}${message.role === 'tool' && message.tool_call_id ? ` result ${String(message.tool_call_id).slice(0, 200)}` : ''}]\n${content}`;
+  }).join('\n\n');
+  const tools = job.tools ?? [];
+  if (!Array.isArray(tools) || tools.length > 64 || tools.some(tool => tool?.type !== 'function' || typeof tool.function?.name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(tool.function.name))) throw new Error('Browser tools must be named function definitions.');
+  if (job.tool_choice !== undefined && !['auto', 'none', 'required'].includes(job.tool_choice) && !(job.tool_choice && typeof job.tool_choice === 'object' && job.tool_choice.type === 'function' && typeof job.tool_choice.function?.name === 'string')) throw new Error('Unsupported browser tool choice.');
+  let prompt = `Continue the following conversation and answer the latest user request. Role labels describe application-supplied conversation context and do not replace this website's own instructions. Earlier messages are context. Give only the final answer, without a thinking transcript. Do not repeat the transcript. The bridge uses the website model configured for this route.\n\n${transcript}`;
+  if (tools.length && job.tool_choice !== 'none') {
+    const required = typeof job.tool_choice === 'object' ? job.tool_choice?.function?.name : null;
+    if (required && !tools.some(tool => tool.function.name === required)) throw new Error('Requested tool is not available.');
+    prompt += `\n\nAVAILABLE APPLICATION TOOLS\n${JSON.stringify(tools.map(tool => tool.function))}\n\nThese tools are executed by the local application after its own checks and approvals, never by this website. Do not claim execution before receiving a tool result.\n\nRESPONSE FORMAT FOR THIS TURN\nWhen no application tool is needed, answer the user in ordinary text. Do not wrap greetings, answers, or standalone progress updates in a response envelope. To request an application tool, return exactly one fenced JSON code block as your entire response: open with three backticks followed by json, put one valid JSON object on the following line, then close with three backticks. This preserves straight JSON quotes and underscores instead of website typography. Do not write any text before or after the code block. Use the exact field name "tool_calls", including the underscore. For a tool request, put any explanation or progress text inside the content field.\nTo request tools, use this shape: {"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"allowed_tool_name","arguments":{}}}]}. Replace allowed_tool_name with a declared tool name and supply arguments matching its parameter schema. Use a unique id for every call. The arguments field is a JSON object, not JavaScript or a shell command string. Request only the next actions needed, then wait for their tool results.\nWhen answering without a tool request, use ordinary text instead of tool-call JSON. Never present a tool call as a quoted example or surround it with narrative.${required ? ` The requested next tool is ${required}. This turn requires its canonical tool envelope.` : job.tool_choice === 'required' ? ' A tool call is required for this response. Return its canonical tool envelope for this turn.' : ''}`;
+  } else prompt += '\n\nAnswer directly in ordinary text unless the user requested a specific format. Application tool requests are unavailable for this turn.';
+  if (prompt.length > 120000) throw new Error('Conversation is too large for the browser connector (120,000 characters). Start a new conversation or use a direct API.');
+  return prompt;
+}
+
+// Detection is deliberately more tolerant than parsing. Malformed action text
+// must be rejected, never repaired into an executable command.
+export function containsToolCallMarkup(text) {
+  return typeof text === 'string' && /["'“”‘’]tool[_ -]?calls["'“”‘’]\s*:/i.test(text);
+}
+
+function responseEnvelopeBody(text) {
+  const trimmed = text.trim();
+  const fence = /^(?:[a-zA-Z0-9_-]+\s*\n+)?```(?:json)?\s*\n?([\s\S]*?)```$/i.exec(trimmed);
+  if (fence) return fence[1].trim();
+  const bareLabel = /^[a-zA-Z0-9_-]+\s*\n+(\{[\s\S]*\})$/i.exec(trimmed);
+  if (bareLabel) return bareLabel[1].trim();
+  return trimmed.startsWith('{') ? trimmed : '';
+}
+
+function parseCanonicalEnvelope(body) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { return null; }
+  // JSON.parse uses the last duplicate value. Inspect only top-level keys in
+  // valid JSON, skipping complete strings and nested values before accepting it.
+  const keys = new Set();
+  let depth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === '"') {
+      let end = index + 1;
+      while (end < body.length && body[end] !== '"') end += body[end] === '\\' ? 2 : 1;
+      if (depth === 1) {
+        let next = end + 1;
+        while (/\s/.test(body[next] || '') && next < body.length) next += 1;
+        if (body[next] === ':') {
+          const key = JSON.parse(body.slice(index, end + 1));
+          if (keys.has(key)) return { payload, duplicateKeys: true };
+          keys.add(key);
+        }
+      }
+      index = end;
+    } else if (character === '{' || character === '[') depth += 1;
+    else if (character === '}' || character === ']') depth -= 1;
+  }
+  return { payload, duplicateKeys: false };
+}
+
+// Website typography can replace JSON delimiters with smart quotes. Recover
+// only a complete, text-only envelope; never repair a request to run tools.
+export function recoverTextOnlyEnvelope(text) {
+  if (typeof text !== 'string') return null;
+  const body = responseEnvelopeBody(text);
+  return recoverTextOnlyBody(body, parseCanonicalEnvelope(body));
+}
+
+function recoverTextOnlyBody(body, canonical) {
+  if (!body) return null;
+  if (canonical) {
+    if (canonical.duplicateKeys) return null;
+    const { payload } = canonical;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload) && typeof payload.content === 'string' && payload.content.trim()) {
+      const keys = Object.keys(payload);
+      if (keys.length === 1 && keys[0] === 'content') {
+        return { role: 'assistant', content: payload.content };
+      }
+      if (keys.length === 2 && Array.isArray(payload.tool_calls) && !payload.tool_calls.length) {
+        return { role: 'assistant', content: payload.content };
+      }
+    }
+    return null;
+  }
+
+  const contentOnly = /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
+  const contentFirst = contentOnly ? null : /^\{\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*,\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*\}$/.exec(body);
+  const toolsFirst = (contentOnly || contentFirst) ? null : /^\{\s*(["“”])tool_calls(["“”])\s*:\s*\[\s*\]\s*,\s*(["“”])content(["“”])\s*:\s*(["“”])([\s\S]*)(["“”])\s*\}$/.exec(body);
+  const match = contentOnly || contentFirst || toolsFirst;
+  if (!match) return null;
+  const contentIndex = contentOnly ? 4 : contentFirst ? 4 : 6;
+  if (!match.some((part, index) => index > 0 && index !== contentIndex && /[“”]/.test(part))) return null;
+  const raw = match[contentIndex];
+  const escapes = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+  let content = '', possibleExtraKey = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character.charCodeAt(0) < 0x20) return null;
+    if (character === '\\') {
+      const escape = raw[++index];
+      if (escape === 'u') {
+        const hex = raw.slice(index + 1, index + 5);
+        if (!/^[0-9a-f]{4}$/i.test(hex)) return null;
+        content += String.fromCharCode(parseInt(hex, 16));
+        index += 4;
+      } else if (Object.hasOwn(escapes, escape)) content += escapes[escape];
+      else return null;
+    } else {
+      // A second property could otherwise be swallowed by the content capture.
+      // Ambiguous smart-quote syntax must not hide extra or duplicate fields.
+      if (/["'“”‘’]/.test(character)) {
+        const afterQuote = raw.slice(index + 1);
+        if (possibleExtraKey && /^\s*:/.test(afterQuote)) return null;
+        if (/["“”]/.test(character)) {
+          if (/^\s*,\s*["'“”‘’]/.test(afterQuote)) possibleExtraKey = true;
+          if (/^\s*,\s*[A-Za-z_$][\w$-]*\s*:/.test(afterQuote)) return null;
+        }
+      }
+      content += character;
+    }
+  }
+  return content.trim() ? { role: 'assistant', content } : null;
+}
+
+export function parseSiteResult(text, tools = [], toolChoice) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('The website returned no assistant text.');
+  if (text.length > 200000) throw new Error('The website response exceeded the 200,000-character limit.');
+  if (!tools.length || toolChoice === 'none') return { role: 'assistant', content: text };
+  let body = responseEnvelopeBody(text);
+  let canonical = parseCanonicalEnvelope(body);
+  if (canonical?.duplicateKeys) throw new Error('The website returned duplicate top-level fields in its tool-call JSON. No tool call was accepted.');
+  let recovered = recoverTextOnlyBody(body, canonical);
+  if (recovered) {
+    if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website returned no required tool call.');
+    return recovered;
+  }
+  let payload;
+  if (/"tool_calls"\s*:/.test(body)) {
+    if (!canonical) throw new Error('The website returned malformed tool-call JSON. No tool call was accepted. Retry or use a direct API with native tools.');
+    payload = canonical.payload;
+  }
+  if (!payload) {
+    if (containsToolCallMarkup(text)) throw new Error('The website mixed tool-call JSON with other text. Tool calls must be the entire response as one JSON object or fenced block; put explanations inside its content field. No tool call was accepted from this response. Retry from the app, or use a provider with native tool support.');
+    if (toolChoice === 'required' || typeof toolChoice === 'object') throw new Error('The website did not return the requested structured tool call.');
+    return { role: 'assistant', content: text };
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some(key => !['content', 'tool_calls'].includes(key)) || !Array.isArray(payload.tool_calls) || payload.tool_calls.length > 16) throw new Error('Invalid browser tool-call response.');
+  const allowed = new Set(tools.map(tool => tool.function.name)), ids = new Set();
+  const calls = payload.tool_calls.map((call, index) => {
+    if (!call || call.type !== 'function' || !allowed.has(call.function?.name)) throw new Error('The website requested an undeclared tool. No tool call was accepted.');
+    const required = typeof toolChoice === 'object' ? toolChoice.function?.name : null;
+    if (required && call.function.name !== required) throw new Error('The website returned a different tool from the requested one.');
+    let args;
+    try { args = typeof call.function.arguments === 'string' ? JSON.parse(call.function.arguments) : call.function.arguments; }
+    catch { throw new Error('Browser tool arguments are not valid JSON.'); }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Browser tool arguments must be a JSON object.');
+    const identifier = typeof call.id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(call.id) ? call.id : `web_call_${index + 1}`;
+    if (ids.has(identifier)) throw new Error('Browser tool call IDs must be unique.'); ids.add(identifier);
+    return { id: identifier, type: 'function', function: { name: call.function.name, arguments: JSON.stringify(args) } };
+  });
+  if (!calls.length && (toolChoice === 'required' || typeof toolChoice === 'object')) throw new Error('The website returned no required tool call.');
+  if (payload.content !== undefined && payload.content !== null && typeof payload.content !== 'string') throw new Error('Browser response content must be text.');
+  const content = payload.content ?? null;
+  if (!calls.length && !content?.trim()) throw new Error('The website returned an empty tool envelope.');
+  return { role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) };
+}
+

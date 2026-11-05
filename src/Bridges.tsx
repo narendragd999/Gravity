@@ -1,13 +1,14 @@
 import { ReactNode, useRef, useState } from 'react';
 import { CheckCircle2, Chrome, Cpu, FolderOpen, Loader2, Play, Plus, RefreshCw, Save, Server, Square, Trash2, X } from 'lucide-react';
 import { AppState, BridgeProfile, BridgeRuntime, Invoke, errorText } from './types';
+import Web2ApiSetup from './Web2ApiSetup';
 
 const BUILTIN_GEMINI = '__builtin_gemini';
 type ProfileDraft = Omit<BridgeProfile, 'id' | 'args' | 'env'> & { id?: string; argsJson: string; envJson: string };
 const blankProfile = (providerId = ''): ProfileDraft => ({ name: '', providerId, launchMode: 'external', executable: '', argsJson: '[]', cwd: '', envJson: '{}', healthUrl: '', startupTimeoutMs: 30000 });
 const toDraft = (profile: BridgeProfile): ProfileDraft => ({ ...profile, argsJson: JSON.stringify(profile.args || [], null, 2), envJson: JSON.stringify(profile.env || {}, null, 2) });
 
-export default function Bridges({ state, call, onAddProvider, onBrowserSetup, children }: { state: AppState; call: Invoke; onAddProvider(): void; onBrowserSetup(): void; children: ReactNode }) {
+export default function Bridges({ state, call, onAddProvider, onBrowserSetup, onUseProvider, modelSelectionDisabled, children }: { state: AppState; call: Invoke; onAddProvider(): void; onBrowserSetup(): void; onUseProvider?(providerId: string, model: string): Promise<void>; modelSelectionDisabled?: boolean; children: ReactNode }) {
   const [selected, setSelected] = useState<string | null>(state.bridgeProfiles[0]?.id || BUILTIN_GEMINI);
   const [draft, setDraft] = useState<ProfileDraft>(() => state.bridgeProfiles[0] ? toDraft(state.bridgeProfiles[0]) : blankProfile(state.providers.find(p => p.managedBy !== 'browser-connector')?.id));
   const [busy, setBusy] = useState('');
@@ -68,7 +69,10 @@ export default function Bridges({ state, call, onAddProvider, onBrowserSetup, ch
   return <>
     <div className="section-eyebrow">WEB2API CONNECTIONS</div>
     <h2>Web2API Bridges</h2>
-    <p className="muted">Optional connections to adapters you already have. Save each adapter once and Gravity starts it on launch.</p><button className="browser-provider-shortcut" onClick={onBrowserSetup}><Chrome size={20} /><span><strong>Just want to use a website account?</strong><small>Use Browser Connector. No adapter or configuration file needed.</small></span></button><label className="check-label"><input type="checkbox" checked={state.settings.bridgesAutoStart} disabled={!!busy} onChange={e => { const bridgesAutoStart = e.target.checked; void task('settings', async () => { await call('settings:save', { bridgesAutoStart }); }); }} />Start saved bridge profiles when Gravity opens</label>
+    <p className="muted">Connect a website below. Gravity manages its saved session and service.</p>
+    <div data-testid="standalone-web2api-help"><Web2ApiSetup state={state} call={call} onUseProvider={onUseProvider} modelSelectionDisabled={modelSelectionDisabled} /></div>
+    <button className="browser-provider-shortcut" onClick={onBrowserSetup}><Chrome size={20} /><span><strong>Browser Connector</strong><small>Use Claude, Gemini, or your usual Chrome tabs through the extension.</small></span></button>
+    <details className="advanced bridge-expert-settings" data-testid="bridge-expert-settings"><summary>Advanced adapter profiles & configuration</summary><label className="check-label"><input type="checkbox" checked={state.settings.bridgesAutoStart} disabled={!!busy} onChange={e => { const bridgesAutoStart = e.target.checked; void task('settings', async () => { await call('settings:save', { bridgesAutoStart }); }); }} />Start saved bridge profiles when Gravity opens</label>
     <div className="provider-pills bridge-profile-pills">
       <button className={selected === BUILTIN_GEMINI ? 'active' : ''} disabled={!!busy} onClick={() => { setSelected(BUILTIN_GEMINI); setNotice(null); }}><Server size={14} />Gemini adapter</button>
       {profiles.map(profile => <button key={profile.id} className={selected === profile.id ? 'active' : ''} disabled={!!busy} onClick={() => selectProfile(profile)}><Server size={14} />{profile.name}</button>)}
@@ -89,7 +93,7 @@ export default function Bridges({ state, call, onAddProvider, onBrowserSetup, ch
       {managed && <>
         <label className="field" htmlFor="bridge-profile-executable">Executable</label>
         <div className="browse-input"><input id="bridge-profile-executable" value={draft.executable} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, executable: event.target.value }))} placeholder="Absolute path to python.exe, node.exe, or an adapter executable" spellCheck={false} /><button className="secondary-btn" aria-label="Browse bridge executable" disabled={fieldsDisabled} onClick={() => choose('executable')}><FolderOpen size={15} />Browse</button></div>
-        <details className="advanced"><summary>Launch arguments & environment</summary><label className="field">Arguments JSON<textarea id="bridge-profile-args" rows={3} className="bridge-json" value={draft.argsJson} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, argsJson: event.target.value }))} placeholder={'["-m", "your_adapter"]'} spellCheck={false} /></label>
+        <details className="advanced"><summary>Launch arguments & environment</summary><label className="field">Arguments (JSON)<textarea id="bridge-profile-args" rows={3} className="bridge-json" value={draft.argsJson} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, argsJson: event.target.value }))} placeholder={'["-m", "your_adapter"]'} spellCheck={false} /></label>
         <p className="field-help">Use the launch arguments documented by your installed adapter. Each argument is a separate JSON string. Arguments are stored as plain text; put credentials in encrypted environment variables or provider settings.</p>
         <label className="field" htmlFor="bridge-profile-directory">Working directory</label>
         <div className="browse-input"><input id="bridge-profile-directory" value={draft.cwd} disabled={fieldsDisabled} onChange={event => setDraft(current => ({ ...current, cwd: event.target.value }))} placeholder="Absolute path to the adapter folder" spellCheck={false} /><button className="secondary-btn" aria-label="Browse bridge working directory" disabled={fieldsDisabled} onClick={() => choose('directory')}><FolderOpen size={15} />Browse</button></div>
@@ -116,5 +120,6 @@ export default function Bridges({ state, call, onAddProvider, onBrowserSetup, ch
       {runtime?.error && <div className="notice error" role="alert">{runtime.error}</div>}
       <div className="setting-block"><h3>{managed ? 'Process output' : 'Connection log'}</h3><pre className="bridge-logs">{runtime?.logs?.length ? runtime.logs.join('\n') : managed ? 'No output yet. Start or check the bridge to see its status here.' : 'No checks yet. Check connection to see the adapter status.'}</pre></div>
     </>}
+    </details>
   </>;
 }

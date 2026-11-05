@@ -1,0 +1,19 @@
+{
+  "name": "gravity-multi-web2api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node cli.mjs start",
+    "setup": "node cli.mjs setup",
+    "login": "node cli.mjs login",
+    "status": "node cli.mjs status",
+    "info": "node cli.mjs info",
+    "models": "node cli.mjs models",
+    "probe": "node cli.mjs probe",
+    "test": "node --test ../../tests/multi-web2api-*.test.mjs"
+  },
+  "dependencies": { "playwright-core": "1.64.1" }
+}

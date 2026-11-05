@@ -1,6 +1,6 @@
 {
   "name": "gravity",
-  "version": "1.5.2",
+  "version": "1.7.0",
   "private": true,
   "description": "A portable desktop agent workspace with browser connections and a built-in local API.",
   "author": "Gravity contributors",
@@ -16,7 +16,12 @@
     "dist": "node scripts/package.mjs",
     "pack": "electron-builder --dir",
     "gateway": "node electron/standalone.mjs",
-    "web2api": "node electron/standalone.mjs"
+    "web2api": "node electron/standalone.mjs",
+    "web2api:accounts": "node bridges/multi-web2api/cli.mjs start",
+    "web2api:setup": "node bridges/multi-web2api/cli.mjs setup",
+    "web2api:info": "node bridges/multi-web2api/cli.mjs info",
+    "web2api:models": "node bridges/multi-web2api/cli.mjs models",
+    "web2api:probe": "node bridges/multi-web2api/cli.mjs probe"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -40,7 +45,12 @@
     "appId": "dev.antigravity.studio",
     "productName": "Gravity",
     "directories": { "output": "release" },
-    "files": ["dist/**/*", "electron/**/*", "browser-extension/**/*", "package.json", "build/icon.ico", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "!node_modules/**/*"],
+    "files": ["dist/**/*", "electron/**/*", "browser-extension/**/*", "bridges/multi-web2api/login-events.mjs", "package.json", "build/icon.ico", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY_LICENSES.txt", "!node_modules/**/*"],
+    "extraResources": [
+      { "from": "release/web2api-build/runtime", "to": "web2api/runtime" },
+      { "from": "release/web2api-build/bridge", "to": "web2api/bridge" },
+      { "from": "release/web2api-build/bridge/node_modules/playwright-core", "to": "web2api/bridge/node_modules/playwright-core", "filter": ["**/*"] }
+    ],
     "npmRebuild": false,
     "win": { "target": "portable", "icon": "build/icon.ico", "signExecutable": false },
     "artifactName": "Gravity-${version}-${arch}.${ext}"

@@ -10,7 +10,7 @@ const job = { id: 'claude-format', siteId: 'claude', tools, messages: [
 const call = { id: 'call_1', type: 'function', function: { name: 'list_files', arguments: { path: '.' } } };
 const envelope = JSON.stringify({ content: 'I will inspect the folder.', tool_calls: [call] });
 
-test('browser prompt puts progress commentary inside the whole-response JSON contract', () => {
+test('browser prompt uses ordinary text for answers and puts tool-request commentary inside its envelope', () => {
   const prompt = formatJobPrompt(job);
   const contract = prompt.slice(prompt.lastIndexOf('RESPONSE FORMAT FOR THIS TURN'));
   assert.match(contract, /exactly one fenced JSON code block as your entire response/);
@@ -18,8 +18,18 @@ test('browser prompt puts progress commentary inside the whole-response JSON con
   assert.match(contract, /exact field name "tool_calls"/);
   assert.match(contract, /progress text inside the content field/);
   assert.ok(prompt.indexOf('progress update.') < prompt.indexOf('RESPONSE FORMAT FOR THIS TURN'));
-  assert.match(contract, /"tool_calls":\[\]/);
+  assert.match(contract, /When no application tool is needed, answer the user in ordinary text/);
+  assert.match(contract, /To request an application tool, return exactly one fenced JSON/);
+  assert.doesNotMatch(contract, /When no tool is needed, use \{"content"/);
   assert.match(prompt, /"name":"list_files"/);
+});
+
+test('browser prompt preserves ordinary no-tool replies and required or named tool choices', () => {
+  assert.match(formatJobPrompt({ ...job, tools: [] }), /Answer directly in ordinary text unless the user requested a specific format/);
+  assert.match(formatJobPrompt({ ...job, tool_choice: 'none' }), /Application tool requests are unavailable/);
+  assert.match(formatJobPrompt({ ...job, tool_choice: 'required' }), /A tool call is required for this response/);
+  assert.match(formatJobPrompt({ ...job, tool_choice: { type: 'function', function: { name: 'list_files' } } }), /requested next tool is list_files.*requires its canonical tool envelope/);
+  assert.deepEqual(parseSiteResult('Hello! How can I help?', tools, 'auto'), { role: 'assistant', content: 'Hello! How can I help?' });
 });
 
 test('whole response can carry commentary and object arguments without losing the tool request', () => {

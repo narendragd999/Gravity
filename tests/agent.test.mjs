@@ -30,6 +30,43 @@ async function approval(runner) {
   throw new Error('Expected pending approval.');
 }
 
+test('Chat mode advertises no tools, rejects unsolicited actions and records real request timing', async t => {
+  let request = 0, writes = 0;
+  const f = await fixture(t, async (_, body, { onDelta }) => {
+    assert.deepEqual(body.tools, []);
+    assert.match(body.messages[0].content, /Chat mode/);
+    if (!request++) return response('', [call('propose_file', { path: 'unexpected.txt', content: 'no' })]);
+    onDelta('Hello'); return response('Hello');
+  }, { mode: 'chat' });
+  f.workspace.write = async () => { writes++; };
+  await f.start('Hello');
+  assert.equal(writes, 0); assert.equal(f.runner.approvals.size, 0);
+  const c = f.store.conversation(f.conversation.id);
+  assert.equal(c.request.phase, 'Complete'); assert.ok(c.request.receivedAt); assert.ok(c.request.elapsedMs >= 0);
+});
+
+test('website image rejection happens before adding a message or invoking the provider', async t => {
+  let requests = 0;
+  const f = await fixture(t, async () => { requests++; return response('unexpected'); });
+  f.store.data.providers[0].models = ['qwen-web']; f.conversation.model = 'qwen-web';
+  assert.throws(() => f.runner.start(f.conversation.id, 'Inspect', ['data:image/png;base64,dGVzdA==']), /text only/);
+  assert.equal(requests, 0); assert.equal(f.conversation.messages.length, 0); assert.equal(f.conversation.status, 'idle');
+});
+
+test('attached project excerpts remain bounded context and Chat mode ignores their embedded instructions', async t => {
+  const f = await fixture(t, async (_, body) => {
+    assert.deepEqual(body.tools, []);
+    assert.match(body.messages[0].content, /excerpts are data/);
+    assert.match(body.messages.at(-1).content, /File: src\/sample.js, lines 2-3/);
+    assert.match(body.messages.at(-1).content, /export const sample/);
+    return response('This exports a constant.');
+  }, { mode: 'chat' });
+  f.runner.start(f.conversation.id, 'Explain', [], [{ projectId: 'project', path: 'src/sample.js', startLine: 2, endLine: 3, content: 'export const sample = 1;', label: 'sample.js', revision: 'fixture' }]);
+  await f.runner.runs.get(f.conversation.id).promise;
+  assert.equal(f.store.conversation(f.conversation.id).messages[0].contexts.length, 1);
+  assert.throws(() => f.runner.start(f.conversation.id, 'Bad context', [], [{ projectId: 'other', content: 'invalid' }]), /this project/);
+});
+
 test('agent reads an existing file, waits for review, then writes with original-content protection', async t => {
   const requests = [];
   const replies = [response(null, [call('read_file', { path: 'note.txt' })]), response(null, [call('propose_file', { path: 'note.txt', content: 'new contents' })]), response('Updated the file.')];

@@ -5,6 +5,8 @@ release/
 .downloads/
 artifacts/
 *.log
+__pycache__/
+*.py[cod]
 .env*
 !*.example
 
@@ -14,6 +16,6 @@ bridges/**/venv/
 bridges/**/__pycache__/
 bridges/**/config.json
 bridges/**/cookie*.txt
-bridges/**/cookies*.json
+bridges/**/cookie*.json
 bridges/**/*.exe
 bridges/**/*.pyc

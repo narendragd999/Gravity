@@ -1,5 +1,17 @@
 # Validation — 3 November 2026
 
+## Version 1.7.0 — 5 November 2026
+
+- 339 Node regression/integration tests passed on Windows; TypeScript/Vite production build and portable packaging passed.
+- Native desktop smoke passed for Chat mode, saved-line context and revision preflight, request timing, image capabilities, safe diagnostics, one-click startup, file apply/review/Undo, passive project guidance, provider switching, permissions and browser pairing. Relevant screenshots were visually inspected.
+- The cleaner desktop layout was checked in light/dark themes and at 980 × 640 with 125% text. Routine connection details and finished-request timing are collapsed; recovery controls remain visible. The source-archive regression confirms named cookie exports remain excluded.
+- Delayed browser-probe fixtures cover concurrent setup views, Connect while checking browsers, cancellation, app closure and bounded timeout recovery.
+- 18 isolated Electron DOM checks passed across the six website adapters and history/draft/challenge/password/expiry/cancellation safeguards.
+- The portable executable launched from an isolated folder with spaces without developer runtimes on PATH. Its embedded website service completed setup without sidecar files, system Node, live website traffic or inference. Authentication, encrypted local keys, automatic startup and preferences were checked.
+- Migration tests retain original profiles during busy/interrupted/corrupt recovery, refuse links, and validate operation after the old release folder is removed. Export/import excludes credential and service settings and executable approvals.
+- The included Claude Python source parses; the beginner guide and Windows setup/start launchers are included. No live Claude account was used.
+- Current-account authentication/generation and a fresh Windows virtual machine remain acceptance checks. Fixture success is not proof of live website compatibility.
+
 ## Version 1.4.3
 
 - **152 Node integration and regression tests passed on Windows.** New checks verify extension protocol/version headers, legacy-client rejection before pairing or prompt delivery, recovery without weakening authentication, stable install paths and updating recognized old folders, refusal of redirected destinations, bounded hung probes/queries/run-result waits, and cancellation without waiting for Chrome. A run injection is never retried after timeout or cancellation.

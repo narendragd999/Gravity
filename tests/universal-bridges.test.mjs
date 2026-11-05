@@ -7,6 +7,10 @@ import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { Store } from '../electron/store.mjs';
 import { ManagedBridges } from '../electron/managed-bridges.mjs';
 
@@ -94,6 +98,82 @@ async function until(predicate, timeout = 4000) {
 }
 
 function isAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+function terminationFixture(t, { absent, taskkillError } = {}) {
+  const pid = 424242, id = 'owned-exit-notification-fixture';
+  const child = new EventEmitter(); child.pid = pid; child.exitCode = null; child.signalCode = null;
+  child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const profile = { id }, store = { data: { bridgeProfiles: [profile] }, bridgeProfile: () => profile };
+  const manager = new ManagedBridges({ store });
+  const entry = manager.entry(id); Object.assign(entry, { child, exited: false, state: 'starting', starting: true, port: 12345 });
+  manager.reservations.set(entry.port, id);
+  const execute = t.mock.method(childProcess, 'execFile', (file, args, options, callback) => {
+    assert.equal(path.basename(file).toLowerCase(), 'taskkill.exe');
+    assert.deepEqual(args, ['/PID', String(pid), '/T', '/F']); assert.equal(options.windowsHide, true);
+    queueMicrotask(() => callback(taskkillError));
+  });
+  const check = t.mock.method(process, 'kill', (target, signal) => {
+    assert.equal(target, pid); assert.equal(signal, 0, 'Only query the already-owned process; never signal another PID');
+    if (absent) throw Object.assign(new Error('Fixture process is absent'), { code: 'ESRCH' });
+    return true;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { execute.mock.restore(); check.mock.restore(); syncBuiltinESMExports(); child.stdout.destroy(); child.stderr.destroy(); });
+  return { manager, entry, child, pid, id, check };
+}
+
+test('Windows termination confirms an absent owned process when its exit notification is delayed', { timeout: 5000, skip: process.platform !== 'win32' }, async t => {
+  const f = terminationFixture(t, { absent: true });
+  const stopped = await f.manager.stop(f.id);
+  assert.equal(stopped.state, 'stopped'); assert.equal(stopped.running, false); assert.equal(stopped.starting, false);
+  assert.equal(f.entry.child, null); assert.equal(f.entry.exited, true);
+  assert.equal(f.manager.reservations.has(12345), false); assert.ok(f.check.mock.calls.length);
+});
+
+test('Windows termination handles an already-ended owned process but preserves a still-live process after taskkill fails', { timeout: 5000, skip: process.platform !== 'win32' }, async t => {
+  await t.test('process has already ended before taskkill completes', async t => {
+    const f = terminationFixture(t, { absent: true, taskkillError: new Error('Process not found') });
+    assert.equal((await f.manager.stop(f.id)).state, 'stopped');
+    assert.equal(f.entry.child, null); assert.equal(f.manager.reservations.has(12345), false);
+  });
+  await t.test('process remains live after failed termination', async t => {
+    const f = terminationFixture(t, { absent: false, taskkillError: new Error('Termination denied') });
+    await assert.rejects(f.manager.stop(f.id), /Could not terminate the owned bridge process tree/);
+    assert.equal(f.entry.child, f.child); assert.equal(f.entry.exited, false);
+    assert.equal(f.manager.reservations.get(12345), f.id); assert.equal(f.manager.status()[0].running, true);
+  });
+});
+
+test('Windows delayed exit notification from a released child cannot stop its replacement', { timeout: 5000, skip: process.platform !== 'win32' }, async t => {
+  const f = await managedFixture(t);
+  const children = [424242, 424243].map(pid => {
+    const child = new EventEmitter(); child.pid = pid; child.exitCode = null; child.signalCode = null;
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); return child;
+  });
+  let launches = 0;
+  const spawn = t.mock.method(childProcess, 'spawn', () => children[launches++]);
+  const execute = t.mock.method(childProcess, 'execFile', (_file, _args, _options, callback) => queueMicrotask(() => callback()));
+  const check = t.mock.method(process, 'kill', (pid, signal) => {
+    assert.ok(children.some(child => child.pid === pid)); assert.equal(signal, 0);
+    throw Object.assign(new Error('Released fixture process'), { code: 'ESRCH' });
+  });
+  syncBuiltinESMExports();
+  f.manager.probe = async () => {};
+  try {
+    assert.equal((await f.manager.start(f.profile.id)).state, 'ready');
+    await f.manager.stop(f.profile.id);
+    assert.equal((await f.manager.start(f.profile.id)).state, 'ready');
+    children[0].emit('exit', 0);
+    assert.equal(f.manager.entries.get(f.profile.id).child, children[1]);
+    assert.equal(f.manager.entries.get(f.profile.id).exited, false);
+    assert.equal(f.manager.status()[0].state, 'ready'); assert.equal(f.manager.status()[0].running, true);
+    assert.equal(f.manager.reservations.get(f.port), f.profile.id);
+  } finally {
+    await f.manager.stop(f.profile.id);
+    spawn.mock.restore(); execute.mock.restore(); check.mock.restore(); syncBuiltinESMExports();
+    for (const child of children) { child.stdout.destroy(); child.stderr.destroy(); }
+  }
+});
 
 test('bridge profiles migrate legacy state, encrypt environment, and mask/preserve/clear saved values', async t => {
   const f = await fixture(t);

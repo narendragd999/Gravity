@@ -10,11 +10,15 @@ import { AgentRunner } from './agent.mjs';
 import { Gateway } from './gateway.mjs';
 import { GeminiBridge } from './bridge.mjs';
 import { ManagedBridges } from './managed-bridges.mjs';
+import { Web2ApiSetup } from './web2api-setup.mjs';
 import { BrowserConnector } from './browser-connector.mjs';
 import { discoverModels } from './providers.mjs';
 import { testProviderGeneration } from './provider-test.mjs';
 import { prepareBrowserExtensionFolders } from './extension-files.mjs';
 import { userDataDirectory, importEnvironmentProviders, startConfiguredServices } from './startup.mjs';
+import { providerCapabilities, cleanProviderError } from './provider-capabilities.mjs';
+import { writeDataExport, importData } from './data-transfer.mjs';
+import { prepareWebsiteData } from './website-data.mjs';
 
 app.setName('Gravity');
 if (process.platform === 'win32') app.setAppUserModelId('dev.antigravity.studio');
@@ -23,15 +27,18 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const entry = path.resolve(here, '../dist/index.html');
 const devUrl = process.env.GRAVITY_DEV_URL || process.env.ANTIGRAVITY_DEV_URL;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Development URL must be the local Vite server.');
-let mainWindow, store, gateway, bridge, bridges, browserConnector, runner, quitting = false;
+let mainWindow, store, gateway, bridge, bridges, web2apiSetup, browserConnector, runner, quitting = false;
 
 let serviceStartup = Promise.resolve([]);
+let websitePreparation = Promise.resolve();
+let dataRecovery = { status: 'ready', message: 'Saved data is available.' };
+let permanentWebsiteData, legacyWebsiteSources = [], websiteRoots = () => [];
 
 const terminals = new Map();
 const workspace = new WorkspaceService();
 const emit = payload => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:event', payload); };
 const changed = () => emit({ type: 'state' });
-const getState = () => ({ ...store.publicState(), appVersion: app.getVersion(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
+const getState = () => ({ ...store.publicState(), dataRecovery: { status: dataRecovery.status, message: dataRecovery.message }, appVersion: app.getVersion(), web2apiSetup: web2apiSetup.status(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
 const bridgeIsActive = id => bridges.status().some(s => s.id === id && (s.running || s.starting));
 const providerHasActiveBridge = id => store.data.bridgeProfiles.some(p => p.providerId === id && bridgeIsActive(p.id));
 const browserProvider = () => store.data.providers.find(p => p.managedBy === 'browser-connector');
@@ -89,7 +96,18 @@ async function dispatch(method, args = {}) {
     case 'conversation:update': {
       const c = store.updateConversation(args); changed(); return c;
     }
-    case 'conversation:send': return runner.start(args.id, args.content, args.images);
+    case 'conversation:send': {
+      const conversation = store.conversation(args.id);
+      const refs = args.contexts || [];
+      if (!Array.isArray(refs) || refs.length > 4) throw new Error('Attach up to four project excerpts.');
+      const contexts = await Promise.all(refs.map(async item => {
+        if (!item || item.projectId !== conversation.projectId) throw new Error('Attached files must belong to the conversation project.');
+        const excerpt = await workspace.context(store.project(item.projectId).path, item.path, { startLine: item.startLine, endLine: item.endLine });
+        if (item.revision !== undefined && item.revision !== excerpt.revision) throw new Error('An attached file changed after it was selected. Remove and attach that context again before sending.');
+        return { ...excerpt, projectId: item.projectId };
+      }));
+      return runner.start(args.id, args.content, args.images, contexts);
+    }
     case 'conversation:stop': return runner.stop(args.id);
     case 'approval:resolve': if (typeof args.approved !== 'boolean') throw new Error('Approval must be true or false.'); return runner.resolve(args.id, args.approved);
     case 'provider:save': {
@@ -106,9 +124,28 @@ async function dispatch(method, args = {}) {
       store.data.providers = store.data.providers.filter(p => p.id !== args.id); store.save(); changed(); return true;
     }
     case 'provider:models': return discoverModels(store.provider(args.id));
+    case 'provider:capabilities': return providerCapabilities(store.provider(args.id), args.model);
     case 'provider:test': {
-      try { return await testProviderGeneration(store.provider(args.id), { model: args.model, browserStatus: browserConnector.status() }); }
-      catch (error) { return { ok: false, message: error.message }; }
+      const started = Date.now();
+      let result;
+      try { result = await testProviderGeneration(store.provider(args.id), { model: args.model, browserStatus: browserConnector.status() }); }
+      catch (error) { result = { ok: false, message: cleanProviderError(error), code: error.code }; }
+      const provider = store.data.providers.find(p => p.id === args.id);
+      if (provider) provider.lastTest = { ...result, model: args.model, checkedAt: new Date().toISOString(), durationMs: Date.now() - started };
+      changed(); return result;
+    }
+    case 'data:export': {
+      const result = await dialog.showSaveDialog(mainWindow, { title: 'Export conversations and nonsecret settings', defaultPath: `Gravity-backup-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'Gravity backup', extensions: ['json'] }] });
+      if (result.canceled || !result.filePath) return { cancelled: true };
+      return writeDataExport(store, result.filePath);
+    }
+    case 'data:import': {
+      if (store.data.conversations.some(c => c.status === 'running')) throw new Error('Stop running conversations before importing a backup.');
+      const result = await dialog.showOpenDialog(mainWindow, { title: 'Import a Gravity backup', properties: ['openFile'], filters: [{ name: 'Gravity backup', extensions: ['json'] }] });
+      if (result.canceled) return { cancelled: true };
+      const file = result.filePaths[0], info = await fs.lstat(file);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 32 * 1024 * 1024) throw new Error('Choose a regular Gravity backup under 32 MB.');
+      const imported = importData(store, await fs.readFile(file, 'utf8')); changed(); return imported;
     }
     case 'settings:save': {
       if (gateway.status().running && ((args.gatewayPort !== undefined && args.gatewayPort !== store.data.settings.gatewayPort) || (args.gatewayToken !== undefined && args.gatewayToken !== store.data.settings.gatewayToken))) throw new Error('Stop the gateway before changing its port or token.');
@@ -141,6 +178,34 @@ async function dispatch(method, args = {}) {
       return bridges.stop(args.id);
     }
     case 'bridges:check': return bridges.check(args.id);
+    case 'web2api:refresh': await websitePreparation; return web2apiSetup.refresh();
+    case 'web2api:connect': {
+      if (args.forceLogin !== undefined && typeof args.forceLogin !== 'boolean') throw new Error('Sign-in refresh must be true or false.');
+      await websitePreparation;
+      return web2apiSetup.connect(args.siteId, { forceLogin: args.forceLogin === true, browserChannel: args.browserChannel });
+    }
+    case 'web2api:browsers': await websitePreparation; return web2apiSetup.listBrowsers();
+    case 'web2api:setBrowser': await websitePreparation; return web2apiSetup.setBrowser(args.channel);
+    case 'web2api:diagnostics': return web2apiSetup.diagnostics();
+    case 'web2api:openAccount': await websitePreparation; return web2apiSetup.openAccount(args.siteId);
+    case 'web2api:migrate': {
+      await websitePreparation;
+      if (web2apiSetup.status().busy || web2apiSetup.pendingSiteId) throw new Error('Finish or cancel website setup before migrating data.');
+      const providerId = web2apiSetup.status().providerId;
+      if (store.data.conversations.some(c => c.providerId === providerId && c.status === 'running')) throw new Error('Stop website conversations before migrating their saved data.');
+      const stopped = [];
+      for (const profile of store.data.bridgeProfiles.filter(p => p.providerId === providerId)) {
+        if (bridges.entries.get(profile.id)?.child) { await bridges.stop(profile.id); stopped.push(profile.id); }
+      }
+      await web2apiSetup.close();
+      dataRecovery = await prepareWebsiteData({ destination: permanentWebsiteData, sources: legacyWebsiteSources, recover: true });
+      web2apiSetup = new Web2ApiSetup({ store, bridges, companionRoots: websiteRoots(dataRecovery.dataDir), previousDataDirs: legacyWebsiteSources, changed, appVersion: app.getVersion() });
+      await web2apiSetup.prepareStartup();
+      for (const id of stopped) await bridges.start(id);
+      changed(); return { status: dataRecovery.status, message: dataRecovery.message };
+    }
+    case 'web2api:finishLogin': return web2apiSetup.finishLogin();
+    case 'web2api:cancel': return web2apiSetup.cancel();
     case 'bridges:choose': {
       if (!['executable', 'directory'].includes(args.kind)) throw new Error('Choose an executable or working directory.');
       const result = await dialog.showOpenDialog(mainWindow, args.kind === 'directory'
@@ -162,6 +227,13 @@ async function dispatch(method, args = {}) {
     case 'workspace:write': return workspace.write(store.project(args.projectId).path, args.path, args.content, args.original);
     case 'workspace:search': return workspace.search(store.project(args.projectId).path, args.query);
     case 'workspace:git': return workspace.git(store.project(args.projectId).path);
+    case 'workspace:context': return { ...await workspace.context(store.project(args.projectId).path, args.path, args), projectId: args.projectId };
+    case 'workspace:review': return workspace.review(store.project(args.projectId).path, args.path);
+    case 'workspace:undo': {
+      if (store.data.conversations.some(c => c.projectId === args.projectId && c.status === 'running')) throw new Error('Stop this project’s running conversations before undoing an edit.');
+      return workspace.undo(store.project(args.projectId).path, args.path);
+    }
+    case 'workspace:guide': return workspace.guide(store.project(args.projectId).path);
     case 'terminal:run': {
       if (terminals.size >= 8) throw new Error('Up to eight commands can run at once.');
       const id = args.id ?? randomUUID();
@@ -211,6 +283,19 @@ else {
     store.save();
     gateway = new Gateway({ getProviders: () => store.publicState().providers, getProvider: id => store.provider(id), onChange: changed });
     bridges = new ManagedBridges({ store, onChange: changed });
+    const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR || (process.env.PORTABLE_EXECUTABLE_FILE ? path.dirname(process.env.PORTABLE_EXECUTABLE_FILE) : path.dirname(process.execPath));
+    const existingCompanion = path.join(portableDirectory, 'Gravity-Web2API');
+    permanentWebsiteData = path.join(app.getPath('userData'), 'web2api');
+    legacyWebsiteSources = [path.join(existingCompanion, '.data'), ...store.data.bridgeProfiles.map(p => {
+      const index = p.args?.indexOf('--data-dir'); return index >= 0 ? p.args[index + 1] : undefined;
+    }).filter(Boolean)];
+    let websiteDataDir = permanentWebsiteData;
+    if (app.isPackaged) { dataRecovery = await prepareWebsiteData({ destination: permanentWebsiteData, sources: legacyWebsiteSources }); websiteDataDir = dataRecovery.dataDir; }
+    websiteRoots = dataDir => !app.isPackaged && process.env.GRAVITY_TEST_WEB2API_ROOT
+      ? [process.env.GRAVITY_TEST_WEB2API_ROOT]
+      : app.isPackaged ? [{ root: path.join(process.resourcesPath, 'web2api'), dataDir }, existingCompanion]
+        : [path.join(app.getAppPath(), 'release', 'Gravity-Web2API')];
+    web2apiSetup = new Web2ApiSetup({ store, bridges, companionRoots: websiteRoots(websiteDataDir), previousDataDirs: legacyWebsiteSources, changed, appVersion: app.getVersion() });
     browserConnector = new BrowserConnector({ store, onChange: changed, port: !app.isPackaged && process.env.ANTIGRAVITY_TEST_CONNECTOR_PORT === '0' ? 0 : 4319, onReady: ({ url, token }) => {
       const existing = browserProvider();
       const saved = store.saveProvider({ ...existing, name: existing?.name || 'Browser Connector', type: 'openai', baseUrl: url, apiKey: token, headers: {}, models: ['claude-web', 'chatgpt-web', 'deepseek-web', 'qwen-web', 'zai-web', 'gemini-web'], defaultModel: existing?.defaultModel || 'claude-web' });
@@ -230,7 +315,24 @@ else {
       return dispatch(method, args);
     });
     createWindow();
+    websitePreparation = web2apiSetup.prepareStartup().catch(error => web2apiSetup.changed({ phase: 'error', error: error.message, message: error.message }));
     serviceStartup = startConfiguredServices({ store, gateway, browserConnector, bridge, bridges,
+      startBridge: async profile => {
+        await websitePreparation;
+        if (profile.id === web2apiSetup.status().bridgeId && profile.launchMode === 'managed') {
+          try {
+            await discoverModels(store.provider(profile.providerId), { timeoutMs: 2500 });
+            return await bridges.check(profile.id);
+          } catch (error) {
+            if ([401, 403].includes(error.status)) {
+              const message = 'The website service rejected the saved local key. Click Connect & start to check its setup.';
+              web2apiSetup.changed({ phase: 'error', error: message, message });
+              throw new Error(message);
+            }
+          }
+        }
+        return bridges.start(profile.id);
+      },
       gatewayPort: !app.isPackaged && process.env.GRAVITY_TEST_GATEWAY_PORT === '0' ? 0 : undefined, onChange: changed });
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   }).catch(error => { dialog.showErrorBox('Gravity could not start', error.message); app.quit(); });
@@ -239,6 +341,6 @@ app.on('before-quit', event => {
   if (quitting || !runner) return;
   event.preventDefault(); quitting = true;
   for (const operation of terminals.values()) operation.stop();
-  Promise.allSettled([runner.shutdown(), gateway.stop(), bridge.stop(), bridges.shutdown(), browserConnector.shutdown()]).then(() => serviceStartup).finally(() => app.quit());
+  Promise.allSettled([runner.shutdown(), web2apiSetup.close(), gateway.stop(), bridge.stop(), bridges.shutdown(), browserConnector.shutdown()]).then(() => serviceStartup).finally(() => app.quit());
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

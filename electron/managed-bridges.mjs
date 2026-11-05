@@ -10,6 +10,17 @@ const MAX_LOG_LINES = 60;
 const MAX_LINE = 8192;
 const alive = entry => !!entry.child?.pid && !entry.exited;
 
+function ownedChildExited(entry, child) {
+  if (entry.exited || child.exitCode != null || child.signalCode != null) return true;
+  try { process.kill(child.pid, 0); }
+  catch (error) {
+    // Windows can complete taskkill before Node delivers the child's exit event.
+    // Only an absent process confirms cleanup; access errors retain ownership.
+    if (error.code === 'ESRCH') { entry.exited = true; return true; }
+  }
+  return false;
+}
+
 function redactor(profile, provider) {
   const secrets = [...new Set([...Object.values(profile.env || {}), provider.apiKey, ...Object.values(provider.headers || {})]
     .flatMap(value => typeof value === 'string' ? [value, JSON.stringify(value).slice(1, -1), ...value.split(/[\r\n]+/)] : [])
@@ -250,10 +261,12 @@ export class ManagedBridges {
     entry.child = child; entry.exited = false;
     this.streamLog(entry, child.stdout); this.streamLog(entry, child.stderr);
     child.once('error', error => {
+      if (entry.child !== child) return;
       entry.exited = true;
       (entry.controller || controller).abort(new Error(`Cannot launch configured executable: ${entry.redact(error.message)}`));
     });
     child.once('exit', (code, signalName) => {
+      if (entry.child !== child) return;
       entry.exited = true; entry.connected = false;
       if (!entry.stopping && !entry.terminating) {
         const error = new Error(`Managed bridge exited${signalName ? ` (${signalName})` : ` with code ${code}`}. Check its configuration and logs.`);
@@ -282,15 +295,15 @@ export class ManagedBridges {
           if (process.platform === 'win32' && !entry.exited) {
             const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
             await new Promise((resolve, reject) => execFile(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000, maxBuffer: 32768 }, error => {
-              if (error && !entry.exited) reject(new Error('Could not terminate the owned bridge process tree. Stop it in Task Manager before changing its profile.'));
+              if (error && !ownedChildExited(entry, child)) reject(new Error('Could not terminate the owned bridge process tree. Stop it in Task Manager before changing its profile.'));
               else resolve();
             }));
           } else if (process.platform !== 'win32') {
             try { process.kill(-child.pid, 'SIGKILL'); }
             catch (error) { if (error.code !== 'ESRCH') throw error; }
           }
-          if (!entry.exited) await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { child.removeListener('exit', finish); reject(new Error('The owned bridge process did not exit after termination.')); }, 3000);
+          if (!ownedChildExited(entry, child)) await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { child.removeListener('exit', finish); if (ownedChildExited(entry, child)) resolve(); else reject(new Error('The owned bridge process did not exit after termination.')); }, 3000);
             const finish = () => { clearTimeout(timer); resolve(); };
             child.once('exit', finish);
             if (entry.exited) { child.removeListener('exit', finish); finish(); }

@@ -1,5 +1,7 @@
 # Third-party components and references
 
+The standalone [multi-provider Web2API bridge](bridges/multi-web2api/README.md) has its own [upstream attribution and notices](bridges/multi-web2api/THIRD_PARTY.md), including the pinned FreeTokenAPI DeepSeek WASM and MIT protocol references. It uses separately installed Chrome/Edge with playwright-core. The Windows companion folder includes the bridge, playwright-core notices, and Node with its matching runtime/LICENSE; source remains available separately.
+
 This independently implemented desktop application uses Electron (MIT; Chromium and other bundled components have their own notices), React/React DOM (MIT), Monaco Editor (MIT), @monaco-editor/react (MIT), Lucide (ISC), react-markdown (MIT), and remark-gfm (MIT). Build tools include Vite, TypeScript, and electron-builder. The npm dependency versions are pinned in package-lock.json. Electron's LICENSE and LICENSES.chromium.html accompany packaged runtime files; collected dependency notices are included in THIRD_PARTY_LICENSES.txt.
 
 Optional standalone bridge source snapshots are in `bridges/`, with provenance and modifications documented in [bridges/README.md](bridges/README.md). Gemini Web2API includes its upstream MIT license and copyright notice. Claude Web2API's upstream README declares MIT but its inspected tree supplies no LICENSE file; this repository does not invent a license grant or relicense that source. The bridge sources are separate from the desktop executable and contain no user sessions or credentials.

@@ -10,8 +10,17 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 loader.config({ monaco });
 const languages: Record<string, string> = { ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', mjs: 'javascript', json: 'json', py: 'python', md: 'markdown', css: 'css', html: 'html', go: 'go', rs: 'rust', sh: 'shell', ps1: 'powershell', yaml: 'yaml', yml: 'yaml', toml: 'ini', sql: 'sql', xml: 'xml', c: 'c', cpp: 'cpp', h: 'cpp', java: 'java', cs: 'csharp' };
 const language = (path: string) => languages[path.split('.').pop() || ''] || 'plaintext';
-export default function CodeEditor({ path, value, onChange, dark, onSave, uiScale = 110 }: { path: string; value: string; onChange(value: string): void; dark: boolean; onSave(): void; uiScale?: number }) {
+export interface CodeSelection { startLine: number; endLine: number }
+export default function CodeEditor({ path, value, onChange, dark, onSave, onSelectionChange, uiScale = 110 }: { path: string; value: string; onChange(value: string): void; dark: boolean; onSave(): void; onSelectionChange?(selection: CodeSelection | null): void; uiScale?: number }) {
   const saveRef = useRef(onSave); saveRef.current = onSave;
-  return <Editor path={path} language={language(path)} value={value} theme={dark ? 'vs-dark' : 'vs'} onChange={value => onChange(value || '')} onMount={editor => { editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current()); }} options={{ fontSize: Math.round(14 * uiScale / 100), fontFamily: 'Consolas, monospace', minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, padding: { top: 16 }, wordWrap: 'on', tabSize: 2, renderLineHighlight: 'gutter' }} loading={<div className="panel-empty">Loading editor…</div>} />;
+  const selectionRef = useRef(onSelectionChange); selectionRef.current = onSelectionChange;
+  return <Editor path={path} language={language(path)} value={value} theme={dark ? 'vs-dark' : 'vs'} onChange={value => onChange(value || '')} onMount={editor => {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current());
+    const cursor = editor.onDidChangeCursorSelection(({ selection }) => {
+      selectionRef.current?.(selection.isEmpty() ? null : { startLine: selection.startLineNumber, endLine: selection.endLineNumber - (selection.endColumn === 1 && selection.endLineNumber > selection.startLineNumber ? 1 : 0) });
+    });
+    const model = editor.onDidChangeModel(() => selectionRef.current?.(null));
+    editor.onDidDispose(() => { cursor.dispose(); model.dispose(); });
+  }} options={{ fontSize: Math.round(14 * uiScale / 100), fontFamily: 'Consolas, monospace', minimap: { enabled: false }, scrollBeyondLastLine: false, automaticLayout: true, padding: { top: 16 }, wordWrap: 'on', tabSize: 2, renderLineHighlight: 'gutter' }} loading={<div className="panel-empty">Loading editor…</div>} />;
 }
-export function CodeDiff({ path, original, modified, dark }: { path: string; original: string; modified: string; dark: boolean }) { return <DiffEditor language={language(path)} original={original} modified={modified} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 14, renderSideBySide: false, scrollBeyondLastLine: false, wordWrap: 'on' }} />; }
+export function CodeDiff({ path, original, modified, dark, uiScale = 110 }: { path: string; original: string; modified: string; dark: boolean; uiScale?: number }) { return <DiffEditor originalModelPath={`${path}/before`} modifiedModelPath={`${path}/after`} language={language(path)} original={original} modified={modified} theme={dark ? 'vs-dark' : 'vs'} options={{ readOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: Math.round(14 * uiScale / 100), renderSideBySide: false, scrollBeyondLastLine: false, wordWrap: 'on' }} />; }

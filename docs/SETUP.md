@@ -2,13 +2,29 @@
 
 ## Run the desktop
 
-Double-click **`Gravity-1.5.2-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. For source development, open the `Gravity` repository folder, run `npm ci`, `npm run build`, and `npm start` with Node.js 24. Git is needed only for the Changes panel; the editor, chat, and direct file operations work without Git.
+Double-click **`Gravity-1.7.0-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
 
-`npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`. `npm run pack` creates an unpacked desktop distribution from the existing build. Run `npm run build` before `npm run pack`.
+`npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`, including the website runtime. `npm run pack` creates an unpacked desktop distribution from existing inputs; run `npm run dist` first to prepare those inputs and the bundled website service.
 
-A packaged executable supplies its own Electron runtime. It still needs your selected model service and credentials. The optional process-based Gemini bridge needs a separate executable and session configuration; the included browser connector uses your existing Chrome profile instead.
+For the website setup UI during source development, run `node scripts/package-web2api.mjs` once to prepare `release/Gravity-Web2API`. Use a Windows Node installation with its adjacent `LICENSE` for this packaging command. The regular packaged executable needs no such step.
 
-## Connect signed-in Chrome accounts
+A packaged executable still needs a usable website account or model API connection. The optional standalone Gemini and Claude bridges are separate from the four bundled websites. See the [Claude Windows guide](CLAUDE-WEB2API-WINDOWS.md) for the included Python bridge.
+
+## Connect a website with minimum configuration
+
+1. Open **Settings → Get started** or **Web2API Bridges**.
+2. Choose **DeepSeek**, **Qwen**, **ChatGPT**, or **Z.ai**. If needed, choose an installed browser under **Browser for the next sign-in**.
+3. Click **Connect & start**.
+4. Sign in yourself in the separate browser that opens and complete any security checks. Open a **new, empty chat**, then **close all windows of that separate browser**. Gravity reopens the saved profile briefly to check it, then starts the service automatically.
+5. When the service is ready, click **Test response**. This sends one short message and may use account quota or appear in website history. Click **Use in this chat** if the connection is not already selected.
+
+The same close-browser flow applies to all four websites on Windows. No extension, pasted cookie, API key, terminal command, or configuration file is needed for this setup. DeepSeek/Qwen use the captured session for direct HTTPS; ChatGPT/Z.ai use their separate browser profiles to submit messages and capture network responses. Your usual browser profile is not read or changed.
+
+Saved sessions are reused and the configured service starts with Gravity. Use **Sign in again** when a session expires. Setup checks readiness without generating a response; only a successful **Test response** verifies generation at that time. Website model availability, quotas, and security checks still apply. The aliases identify website routes, not access to a specific restricted model version.
+
+If setup fails, follow the recovery action beside the error. **Connection details & diagnostics → Copy diagnostics** records stages and error codes without account credentials or chat content. Preparing another account preserves existing connections where possible; service reload waits for active requests. Do not delete your saved profile to retry a sign-in check.
+
+## Optional Browser Connector extension
 
 For Claude, ChatGPT, DeepSeek, Qwen, Z.ai, and Gemini, open **Settings → Browser Connector** and follow the [Chrome quick start](BROWSER-CONNECTOR.md#one-time-chrome-setup). The connector starts automatically and creates the **Browser Connector** provider and all six website routes. Older profiles may retain its name **Connected Chrome**. **Open extension setup** prepares the bundled extension and opens Chrome's extensions page. Install it once with **Developer mode → Load unpacked**, click **Connect** in its popup, and approve the matching request in the desktop.
 
@@ -40,13 +56,13 @@ Provider keys and advanced-header values are encrypted in desktop state. Existin
 
 **Test model** sends a short, fixed message to the saved default model and requires a nonempty text response. It does not send conversation history, project files, or tool definitions. It can use provider quota and, for browser models, appear in website history. Discovery remains separate and is not required for testing a manually entered model. Browser tests first check that the connector is running, the extension is paired, and the selected website tab is detected and available. A successful test verifies a text response at that time; test project tools separately with a model that supports tool calls.
 
-The Get started page offers browser and API-key setup. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
+The Get started page separates bundled website setup, the Browser Connector extension, and API-key setup. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
 
 ## Projects, agents, and changes
 
 Open a local folder to add a project. Removing a project from the sidebar removes its reference and does not delete the folder. Conversations are saved automatically. Separate conversations can run concurrently; stopping one does not stop the others.
 
-**Plan** exposes file inspection and artifact creation. **Build** also permits the model to request file writes and shell commands. The permission selector below the composer controls approval: **Ask for approval** asks for writes and commands, **Approve file edits** automatically applies project file edits but asks for commands, and **Full access** automatically runs both. Full access requires a confirmation before activation. Each conversation keeps its own choice; a new blank conversation starts with Ask for approval. Stop a running agent before changing its permissions. See [permissions](PERMISSIONS.md).
+New chats use **Chat** mode for ordinary questions without project tools. **Plan** exposes file inspection and artifact creation. **Build** also permits the model to request file writes and shell commands. The permission selector below the composer controls approval: **Ask for approval** asks for writes and commands, **Approve file edits** automatically applies project file edits but asks for commands, and **Full access** automatically runs both. Full access requires a confirmation before activation. Each conversation keeps its own choice; a new blank conversation starts with Ask for approval. Stop a running agent before changing its permissions. See [permissions](PERMISSIONS.md).
 
 Plan mode remains read-only at every permission level. A rejected action is returned to the model as rejected. Existing files must be read before replacement, and the write is rejected if the file has changed since the proposal was prepared. Automatic approvals are labelled in the conversation and do not bypass backups, stale-content checks, or file-tool boundaries.
 
@@ -150,6 +166,12 @@ An unauthenticated local provider can omit `apiKeyEnv`. Keep tokens out of commi
 ## Local data and recovery
 
 New profiles use `%APPDATA%\Gravity\state.json`. An existing Antigravity Studio profile remains at `%APPDATA%\Antigravity Studio\state.json` so saved credentials and extension locations continue to work. It contains project references, conversation content, settings, the gateway token, and encrypted provider secrets. Treat this directory as private local data. Provider encryption is tied to the operating-system user; copying this file to another machine is not a credential migration mechanism.
+
+Bundled website sessions live in `web2api` inside that active user-data directory, so moving only the executable on the same computer keeps setup available. The private bridge configuration contains the generated local key and any captured DeepSeek/Qwen session tokens; do not treat it as an encrypted export. ChatGPT/Z.ai retain their dedicated browser profiles.
+
+Gravity recognizes earlier companion data and migrates it only after the separate browsers and service release it. It retains the original for rollback. For a pending or failed migration, close those browsers, stop any externally launched bridge, and choose **Settings → Appearance → Migrate saved website data**. Keep the old companion folder until this succeeds. Gravity does not terminate an externally owned service automatically.
+
+**Settings → Appearance → Export backup** saves conversations and nonsecret API settings. **Import backup** restores them with Ask permissions. Backups do not transfer website sessions, API credentials, bridge launch settings, or prior executable approvals. Sign in or enter credentials again on another Windows account or computer.
 
 Browser extension setup copies the bundled files into `browser-extension\current` inside the active profile directory and updates recognized older versioned folders in place. The generated browser provider key is encrypted like other provider keys and rotates when the connector starts. The separate approved extension pairing token is encrypted in desktop state and retained by Chrome's extension, allowing reconnection after a normal restart. Revoke access in Browser Connector settings to remove that saved approval. Website logins remain in Chrome and are not copied into desktop state.
 

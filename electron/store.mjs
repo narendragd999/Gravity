@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { normalizePermissionMode, validatePermissionTransition, permissionDescription } from './permissions.mjs';
 import { ENV_MASK, normalizeBridgeProfile, normalizeBridgeEnv, validateBridgeUrls } from './bridge-profiles.mjs';
+import { providerCapabilities } from './provider-capabilities.mjs';
 
 const defaults = () => ({
   version: 1, projects: [], conversations: [], bridgeProfiles: [],
@@ -28,7 +29,10 @@ export class Store {
       this.data = { ...this.data, ...saved, settings: { ...this.data.settings, ...saved.settings } };
       for (const c of this.data.conversations) {
         c.permissionMode = normalizePermissionMode(c.permissionMode);
-        if (c.status === 'running') c.status = 'idle';
+        if (c.status === 'running') {
+          c.status = 'idle';
+          if (c.request) { c.request.phase = 'Interrupted by restart'; c.request.finishedAt = new Date().toISOString(); c.request.elapsedMs = Math.max(0, Date.now() - Date.parse(c.request.startedAt)); }
+        }
         for (const m of c.messages) if (m.approval?.status === 'pending') m.approval.status = 'rejected';
       }
     }
@@ -43,7 +47,7 @@ export class Store {
     const { encryptedBrowserPairing, ...data } = this.data;
     return structuredClone({ ...data, conversations: this.data.conversations.map(({ apiHistory, ...c }) => c), providers: this.data.providers.map(p => {
       const { encryptedApiKey, encryptedHeaders, ...publicFields } = p;
-      return { ...publicFields, hasApiKey: !!encryptedApiKey, headers: encryptedHeaders ? Object.fromEntries(Object.keys(this.decryptJSON(encryptedHeaders)).map(k => [k, '********'])) : {} };
+      return { ...publicFields, capabilities: providerCapabilities(p), hasApiKey: !!encryptedApiKey, headers: encryptedHeaders ? Object.fromEntries(Object.keys(this.decryptJSON(encryptedHeaders)).map(k => [k, '********'])) : {} };
     }), bridgeProfiles: this.data.bridgeProfiles.map(p => {
       const { encryptedEnv, env, ...fields } = p;
       return { ...fields, env: encryptedEnv ? Object.fromEntries(Object.keys(this.decryptJSON(encryptedEnv)).map(key => [key, ENV_MASK])) : {} };
@@ -90,6 +94,11 @@ export class Store {
     const models = [...new Set((input.models ?? []).map(x => String(x).trim()).filter(Boolean))];
     const current = this.data.providers.find(x => x.id === input.id);
     const p = { ...current, id: current?.id ?? randomUUID(), name: input.name.trim(), type: input.type, baseUrl: url.toString(), models, defaultModel: input.defaultModel?.trim() || models[0] || '' };
+    if (input.managedBy !== undefined) {
+      if (!['browser-connector', 'web2api'].includes(input.managedBy)) throw new Error('Unsupported managed connection.');
+      p.managedBy = input.managedBy;
+    }
+    if (current && (current.type !== p.type || current.baseUrl !== p.baseUrl || input.apiKey !== undefined || input.headers !== undefined)) delete p.lastTest;
     if (p.defaultModel && !p.models.includes(p.defaultModel)) p.models.push(p.defaultModel);
     if (input.apiKey !== undefined) p.encryptedApiKey = input.apiKey ? this.encrypt(input.apiKey) : undefined;
     if (input.headers !== undefined) {
@@ -164,7 +173,7 @@ export class Store {
     if (input.projectId) this.project(input.projectId);
     const provider = input.providerId ? this.provider(input.providerId) : this.data.providers[0];
     const mode = input.mode ?? 'build';
-    if (!['plan', 'build'].includes(mode)) throw new Error('Invalid agent mode.');
+    if (!['chat', 'plan', 'build'].includes(mode)) throw new Error('Invalid agent mode.');
     const permissionMode = input.permissionMode === undefined ? 'ask' : input.permissionMode;
     validatePermissionTransition('ask', permissionMode, input.confirmFullAccess);
     const now = new Date().toISOString();
@@ -175,14 +184,15 @@ export class Store {
     const c = this.conversation(input.id);
     if (c.status === 'running' && ['model', 'providerId', 'mode', 'permissionMode'].some(key => input[key] !== undefined)) throw new Error('Stop the conversation before changing its model, mode, or permissions.');
     if (input.providerId !== undefined) this.provider(input.providerId);
-    if (input.mode !== undefined && !['plan', 'build'].includes(input.mode)) throw new Error('Invalid mode.');
+    if (input.mode !== undefined && !['chat', 'plan', 'build'].includes(input.mode)) throw new Error('Invalid mode.');
     for (const key of ['title', 'model', 'providerId']) if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key].length > 500)) throw new Error(`${key} must be text of up to 500 characters.`);
     if (input.archived !== undefined && typeof input.archived !== 'boolean') throw new Error('archived must be a boolean.');
     if (input.permissionMode !== undefined) validatePermissionTransition(normalizePermissionMode(c.permissionMode), input.permissionMode, input.confirmFullAccess);
     const permissionChanged = input.permissionMode !== undefined && input.permissionMode !== normalizePermissionMode(c.permissionMode);
     const providerSelectionChanged = ['providerId', 'model'].some(key => input[key] !== undefined && input[key] !== c[key]);
+    if (input.mode !== undefined && input.mode !== c.mode) delete c.apiHistory;
     for (const key of ['title', 'archived', 'providerId', 'model', 'mode', 'permissionMode']) if (input[key] !== undefined) c[key] = input[key];
-    if (c.status === 'error' && providerSelectionChanged) c.status = 'idle';
+    if (c.status === 'error' && providerSelectionChanged) { c.status = 'idle'; delete c.failure; }
     c.updatedAt = new Date().toISOString();
     if (permissionChanged) c.messages.push({ id: randomUUID(), role: 'tool', toolName: 'permissions', content: permissionDescription(c.permissionMode), createdAt: c.updatedAt });
     this.save(); return structuredClone(c);

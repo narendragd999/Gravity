@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowUpRight, Check, CheckCircle2, Chrome, FolderOpen, Link2, Loader2, Play, ShieldCheck, Square, Unplug, X } from 'lucide-react';
-import { AppState, BrowserSiteId, Invoke, errorText, initialState } from './types';
+import { AppState, BrowserSiteId, Invoke, ResponseCheck, errorText, initialState } from './types';
 
 const websites: { id: BrowserSiteId; name: string; model: string; mark: string }[] = [
   { id: 'claude', name: 'Claude', model: 'claude-web', mark: 'C' },
@@ -16,7 +16,7 @@ export default function BrowserSetup({ state, call, onUseProvider, modelSelectio
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState<{ text: string; error?: boolean; step?: string } | null>(null);
   const [extensionPath, setExtensionPath] = useState('');
-  const [siteTests, setSiteTests] = useState<Partial<Record<BrowserSiteId, { ok: boolean; message: string }>>>({});
+  const [siteTests, setSiteTests] = useState<Partial<Record<BrowserSiteId, ResponseCheck>>>({});
   const connected = connector.running && connector.paired && connector.extension?.compatible !== false;
   const provider = state.providers.find(item => item.managedBy === 'browser-connector');
   const pending = connector.pendingPairings || [];
@@ -62,16 +62,16 @@ export default function BrowserSetup({ state, call, onUseProvider, modelSelectio
         const detected = connected && !!site?.connected;
         const working = connected && !!site?.busy;
         const siteError = connected ? site?.error : undefined;
-        const testResult = siteTests[website.id];
+        const testResult = connected ? siteTests[website.id] || (provider?.lastTest?.model === website.model ? provider.lastTest : undefined) : undefined;
         const status = !connected ? 'Connect extension first' : siteError ? 'Needs attention' : working ? 'Working' : detected ? 'Tab detected' : 'Open & sign in';
         return <article className={`browser-site ${detected ? 'detected' : ''}`} key={website.id}>
-          <div className="browser-site-heading"><span className={`browser-site-mark ${website.id}`}>{website.mark}</span><div><h5>{website.name}</h5></div></div>
+          <div className="browser-site-heading"><span className={`browser-site-mark ${website.id}`}>{website.mark}</span><div><h5>{website.name}</h5><small>Uses the model selected on the website</small></div></div>
           <span className={`browser-status ${working || detected ? 'online' : ''} ${siteError ? 'error' : ''}`} aria-live="polite">{working ? <Loader2 size={10} className="spin" /> : <i />}{status}</span>
           {siteError && <p className="browser-site-error" role="alert">{siteError}</p>}
           <button data-testid={`browser-site-${website.id}`} className="text-btn" disabled={!!busy} onClick={() => task(`site:${website.id}`, async () => { await call('browser:openSite', { siteId: website.id }); })}><ArrowUpRight size={13} />Open {website.name}</button>
           {onUseProvider && <button data-testid={`browser-use-${website.id}`} className="secondary-btn" disabled={!!busy || !!modelSelectionDisabled || !connected || !provider || !detected || working || !!siteError} onClick={() => task(`use:${website.id}`, async () => { await onUseProvider(provider!.id, website.model); })}><Check size={13} />Use in chat</button>}
-          <button data-testid={`browser-test-${website.id}`} className="text-btn" disabled={!!busy || !connected || !provider || working} onClick={() => task(`test:${website.id}`, async () => { setSiteTests(previous => ({ ...previous, [website.id]: undefined })); const result = await call<{ ok: boolean; message: string }>('provider:test', { id: provider!.id, model: website.model }); setSiteTests(previous => ({ ...previous, [website.id]: result })); })}>{busy === `test:${website.id}` ? <Loader2 size={12} className="spin" /> : <CheckCircle2 size={12} />}{busy === `test:${website.id}` ? 'Testing…' : 'Test response'}</button>
-          {testResult && <p data-testid={`browser-test-result-${website.id}`} role="status" className={`browser-site-test ${testResult.ok ? 'success' : 'error'}`}>{testResult.ok ? 'Last test passed. ' : 'Last test failed. '}{testResult.message}</p>}
+          <button data-testid={`browser-test-${website.id}`} className="text-btn" disabled={!!busy || !connected || !provider || working} onClick={() => task(`test:${website.id}`, async () => { setSiteTests(previous => ({ ...previous, [website.id]: undefined })); await call('provider:test', { id: provider!.id, model: website.model }); const next = await call<AppState>('state:get'); const checked = next.providers.find(item => item.id === provider!.id)?.lastTest; if (checked?.model === website.model) setSiteTests(previous => ({ ...previous, [website.id]: checked })); })}>{busy === `test:${website.id}` ? <Loader2 size={12} className="spin" /> : <CheckCircle2 size={12} />}{busy === `test:${website.id}` ? 'Testing…' : 'Test response'}</button>
+          {testResult && <p data-testid={`browser-test-result-${website.id}`} role="status" className={`browser-site-test ${testResult.ok ? 'success' : 'error'}`}>{testResult.ok ? 'Response verified. ' : 'Response test failed. '}{testResult.message}<span>Checked {new Date(testResult.checkedAt).toLocaleString()}{testResult.durationMs !== undefined && ` · ${(testResult.durationMs / 1000).toFixed(1)}s`}</span></p>}
         </article>;
       })}</div><p className="field-help">Choose the actual model on each website. Test response sends a short message and checks for a reply; it may use account quota and appear in chat history.</p>
     </div>
