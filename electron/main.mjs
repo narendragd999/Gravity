@@ -20,6 +20,7 @@ import { providerCapabilities, cleanProviderError } from './provider-capabilitie
 import { writeDataExport, importData } from './data-transfer.mjs';
 import { prepareWebsiteData } from './website-data.mjs';
 import { AttachmentStore } from './attachments.mjs';
+import { DocumentExtractor } from './document-service.mjs';
 
 app.setName('Gravity');
 if (process.platform === 'win32') app.setAppUserModelId('dev.antigravity.studio');
@@ -37,7 +38,13 @@ let permanentWebsiteData, legacyWebsiteSources = [], websiteRoots = () => [];
 
 const terminals = new Map();
 const workspace = new WorkspaceService();
-const attachments = new AttachmentStore();
+const attachments = new AttachmentStore({ documentExtractor: new DocumentExtractor(app.isPackaged ? {
+  workerPath: path.join(process.resourcesPath, 'documents', 'document-worker.mjs'),
+  pdfWorkerPath: pathToFileURL(path.join(process.resourcesPath, 'documents', 'pdf.worker.mjs')).href,
+  runtimePath: path.join(process.resourcesPath, 'web2api', 'runtime', 'node.exe'), runtimeAsNode: false,
+} : {}) });
+let attachmentSelection;
+const cancelAttachmentSelection = () => attachmentSelection?.controller.abort();
 const emit = payload => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:event', payload); };
 const changed = () => emit({ type: 'state' });
 const getState = () => ({ ...store.publicState(), dataRecovery: { status: dataRecovery.status, message: dataRecovery.message }, appVersion: app.getVersion(), web2apiSetup: web2apiSetup.status(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
@@ -112,12 +119,26 @@ async function dispatch(method, args = {}) {
       return runner.start(args.id, args.content, args.images, contexts, files);
     }
     case 'attachments:choose': {
+      if (attachmentSelection) throw new Error('Wait for the current file selection to finish, or cancel it first.');
+      if (args.requestId !== undefined && (typeof args.requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(args.requestId))) throw new Error('Invalid file selection request.');
+      const selection = { requestId: args.requestId || randomUUID(), controller: new AbortController() };
+      attachmentSelection = selection;
+      try {
       const provider = args.providerId ? store.provider(args.providerId) : undefined;
       const capabilities = provider ? providerCapabilities(provider, args.model) : { images: false };
       const result = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'],
         filters: [{ name: 'Text and code', extensions: ['txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'py', 'html', 'css', 'yaml', 'yml', 'xml', 'log'] },
+          { name: 'PDF and Office documents', extensions: ['pdf', 'docx', 'xlsx', 'pptx'] },
           ...(capabilities.images ? [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] : []), { name: 'All files', extensions: ['*'] }] });
-      return result.canceled ? { files: [], images: [], rejected: [] } : attachments.select(result.filePaths, capabilities);
+      selection.controller.signal.throwIfAborted();
+      return result.canceled ? { files: [], images: [], rejected: [] } : await attachments.select(result.filePaths, { ...capabilities,
+        signal: selection.controller.signal, onProgress: progress => emit({ type: 'attachment-progress', requestId: selection.requestId, ...progress }) });
+      } catch (error) { if (selection.controller.signal.aborted) throw new Error('File reading cancelled. Your draft and previous attachments are kept.'); throw error; }
+      finally { if (attachmentSelection === selection) attachmentSelection = undefined; }
+    }
+    case 'attachments:cancel': {
+      if (args.requestId === attachmentSelection?.requestId) cancelAttachmentSelection();
+      return { cancelled: true };
     }
     case 'conversation:stop': return runner.stop(args.id);
     case 'approval:resolve': if (typeof args.approved !== 'boolean') throw new Error('Approval must be true or false.'); return runner.resolve(args.id, args.approved);
@@ -274,8 +295,8 @@ function createWindow() {
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false } });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== (devUrl || pathToFileURL(entry).href)) event.preventDefault(); });
-  mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) attachments.clear(); });
-  mainWindow.on('closed', () => attachments.clear());
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { cancelAttachmentSelection(); attachments.clear(); } });
+  mainWindow.on('closed', () => { cancelAttachmentSelection(); attachments.clear(); });
   mainWindow.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(mainWindow, { type: 'question', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0, title: 'Unsaved changes', message: 'Close the app and discard unsaved editor changes?' });
     if (choice === 1) event.preventDefault();

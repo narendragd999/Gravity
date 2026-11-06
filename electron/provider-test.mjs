@@ -34,7 +34,7 @@ function responseText(content) {
 }
 
 // This deliberately has no conversation, project, system prompt, or tool input.
-export async function testProviderGeneration(provider, { model, browserStatus, signal, timeoutMs = TEST_TIMEOUT_MS } = {}) {
+export async function testProviderGeneration(provider, { model, browserStatus, signal, timeoutMs } = {}) {
   const selectedModel = typeof model === 'string' && model.trim()
     || provider.defaultModel?.trim() || provider.models?.find(model => typeof model === 'string' && model.trim())?.trim() || '';
   const result = { providerId: provider.id, providerName: redact(provider.name || 'Provider', provider), model: redact(selectedModel, provider), endpoint: '' };
@@ -43,12 +43,13 @@ export async function testProviderGeneration(provider, { model, browserStatus, s
     if (!selectedModel) throw new ProviderError('Enter a Model ID or discover models, save the provider, then test generation.', 400, 'missing_model');
     result.endpoint = redact(safeGenerationEndpoint(provider, selectedModel), provider);
     if (provider.managedBy === 'browser-connector') checkBrowserReadiness(selectedModel, browserStatus);
+    const maximumTimeout = ['browser-connector', 'web2api'].includes(provider.managedBy) ? 180000 : TEST_TIMEOUT_MS;
     const response = await complete(provider, {
       model: selectedModel,
       messages: [{ role: 'user', content: TEST_PROMPT }],
       max_tokens: 128,
       stream: false,
-    }, { signal, timeoutMs: Math.min(TEST_TIMEOUT_MS, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : TEST_TIMEOUT_MS) });
+    }, { signal, timeoutMs: Math.min(maximumTimeout, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : maximumTimeout) });
     if (!responseText(response.choices?.[0]?.message?.content)) throw new ProviderError('The provider returned no text. Generation was not verified; check the selected model and bridge logs.', 502, 'empty_response');
     return { ...result, ok: true, message: `Generation verified for ${result.providerName} (${result.model}) at ${result.endpoint}. Received a text response.` };
   } catch (error) {

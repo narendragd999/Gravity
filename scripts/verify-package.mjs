@@ -15,7 +15,11 @@ assert.equal(sourcePackage.build.productName, 'Gravity', 'Distribution product n
 const builderRequire = createRequire(import.meta.resolve('electron-builder'));
 const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'));
 const asar = libraryRequire('@electron/asar');
-const archive = path.join(root, 'release/win-unpacked/resources/app.asar');
+const releaseRoot = path.join(root, 'release');
+const outputDirectory = path.resolve(root, process.env.GRAVITY_RELEASE_DIR || 'release');
+assert.ok(outputDirectory === releaseRoot || outputDirectory.startsWith(releaseRoot + path.sep), 'Release verification must stay inside the workspace release directory');
+const outputRelative = path.relative(root, outputDirectory).replaceAll('\\', '/');
+const archive = path.join(outputDirectory, 'win-unpacked/resources/app.asar');
 const forbidden = /(?:^|\/)(?:cookie[^/]*\.(?:txt|json)|state\.json|bridge-runtime\.json|credentials\.json|auth\.json|config\.json|tests|node_modules|\.git|\.data|\.downloads|__pycache__|\.env[^/]*)(?:\/|$)|\.(?:log|pyc|pyo|pem|key|p12|pfx)$/i;
 
 function regularFile(relative) {
@@ -61,7 +65,7 @@ assert.deepEqual(JSON.parse(asar.extractFile(archive, 'package.json')), expected
 // The portable executable wraps this directory, so verify its bundled runtime
 // as well as app.asar. A launch must not depend on system Node or a source tree.
 for (const relative of ['Gravity.exe', 'icudtl.dat', 'resources.pak', 'LICENSE.electron.txt', 'LICENSES.chromium.html']) {
-  regularFile(`release/win-unpacked/${relative}`);
+  regularFile(`${outputRelative}/win-unpacked/${relative}`);
 }
 const extensionManifest = JSON.parse(asar.extractFile(archive, path.normalize('browser-extension/manifest.json')));
 assert.equal(extensionManifest.name, 'Gravity Browser Connector');
@@ -84,11 +88,17 @@ function externalFiles(directory, prefix = '') {
 }
 for (const directory of ['runtime', 'bridge']) {
   const source = path.join(root, 'release', 'web2api-build', directory);
-  const bundled = path.join(root, 'release', 'win-unpacked', 'resources', 'web2api', directory);
+  const bundled = path.join(outputDirectory, 'win-unpacked', 'resources', 'web2api', directory);
   const inventory = externalFiles(source);
   assert.deepEqual(externalFiles(bundled), inventory, 'Bundled website service inventory differs');
   for (const relative of inventory) assert.ok(fs.readFileSync(path.join(source, relative)).equals(fs.readFileSync(path.join(bundled, relative))), `Website resource differs: ${directory}/${relative}`);
 }
+const documentSource = path.join(root, 'release/document-build');
+const documentBundle = path.join(outputDirectory, 'win-unpacked/resources/documents');
+const documentInventory = ['document-worker.mjs', 'pdf.worker.mjs'];
+assert.deepEqual(externalFiles(documentSource), documentInventory, 'Document reader build inventory differs');
+assert.deepEqual(externalFiles(documentBundle), documentInventory, 'Bundled document reader inventory differs');
+for (const relative of documentInventory) assert.ok(fs.readFileSync(path.join(documentSource, relative)).equals(fs.readFileSync(path.join(documentBundle, relative))), `Document resource differs: ${relative}`);
 
 // Verification must not silently replace an outdated source archive.
 const pythonCandidates = process.env.PYTHON ? [process.env.PYTHON] : ['python', 'python3'];
@@ -104,9 +114,9 @@ assert.equal(verification?.status, 0, 'Source ZIP verification failed (Python 3 
 
 const targets = [`Gravity-${version}-x64.exe`, `Gravity-${version}-source.zip`];
 const hashes = targets.map(name => {
-  const filename = regularFile(`release/${name}`);
+  const filename = regularFile(`${outputRelative}/${name}`);
   return `${createHash('sha256').update(fs.readFileSync(filename)).digest('hex')}  ${name}`;
 }).join('\n') + '\n';
-fs.writeFileSync(path.join(root, `release/SHA256SUMS-${version}.txt`), hashes);
+fs.writeFileSync(path.join(outputDirectory, `SHA256SUMS-${version}.txt`), hashes);
 console.log('PASS: packaged app and source ZIP match current inputs; credential and runtime paths excluded; icon and license notices verified.');
 console.log(hashes);

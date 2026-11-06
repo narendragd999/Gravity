@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gravity Browser Connector",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "minimum_chrome_version": "120",
   "description": "Connect your signed-in AI chat tabs to your local Gravity app. No cookies or session credentials are exported.",
   "permissions": ["scripting", "storage", "alarms"],

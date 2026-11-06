@@ -135,6 +135,11 @@ async function run() {
         assert.equal((await state(win)).sends, 0);
         if (option === 'draft') assert.equal(await win.webContents.executeJavaScript('document.querySelector("[contenteditable]").innerText'), 'Preserve this existing draft.');
         if (option === 'history') assert.match(await win.webContents.executeJavaScript('document.querySelector("#fixture-messages").textContent'), /Existing private conversation/);
+        if (option === 'challenge') {
+          const probe = await invoke(win, 'probe', site);
+          assert.equal(probe.connected, false); assert.equal(probe.verificationRequired, true);
+          assert.equal((await state(win)).inputs, 0, 'Security probing never types, clicks, or solves the challenge');
+        }
         checks++; console.log(`PASS: ${option} refused before submitting a prompt`);
       } finally { close(win); }
     }

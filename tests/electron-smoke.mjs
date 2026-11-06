@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import assert from 'node:assert/strict';
+import { docxFixture, pdfFixture } from './document-fixtures.mjs';
 async function runSmoke() {
 const smokePackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 // Electron launched with a script reports its own version; exercise the same
@@ -246,6 +247,10 @@ try {
   await click('button.new-conversation');
   await setValue('.model-selector select', JSON.stringify([provider.id, provider.defaultModel]));
   const pickedPath = path.join(temporary, 'picked-note.md'); await fs.writeFile(pickedPath, 'SMOKE_PICKED_NOTE: only this explicitly selected file.');
+  const pickedWord = path.join(temporary, 'picked-document.docx');
+  const pickedPdf = path.join(temporary, 'picked-document.pdf');
+  await fs.writeFile(pickedWord, docxFixture('<w:p><w:r><w:t>SMOKE_DOCX_MARKER: selected Word text.</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Selected table cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'));
+  await fs.writeFile(pickedPdf, pdfFixture({ pages: 2, text: 'SMOKE_PDF_MARKER: selected PDF text.' }));
   const originalDialog = dialog.showOpenDialog;
   let releasePicker;
   dialog.showOpenDialog = async () => new Promise(resolve => { releasePicker = resolve; });
@@ -257,8 +262,16 @@ try {
     await waitFor(`!document.querySelector('[data-testid="attach-files"]').disabled`, 'Picker settles after its originating draft changes');
     assert.equal(await evaluate(`!!document.querySelector('[data-testid="picked-files"]')`), false, 'Late picker results never attach to a new draft');
   } finally { dialog.showOpenDialog = originalDialog; }
-  dialog.showOpenDialog = async (_window, options) => { assert.equal(options.title, 'Attach files'); assert.ok(options.properties.includes('openFile') && options.properties.includes('multiSelections')); return { canceled: false, filePaths: [pickedPath] }; };
-  try { await click('[data-testid="attach-files"]'); await waitFor(`document.querySelector('[data-testid="picked-files"]')?.textContent.includes('picked-note.md')`, 'Plus opens native file selection and shows the selected file without a project'); }
+  dialog.showOpenDialog = async (_window, options) => {
+    assert.equal(options.title, 'Attach files'); assert.ok(options.properties.includes('openFile') && options.properties.includes('multiSelections'));
+    assert.ok(options.filters.some(filter => ['pdf', 'docx', 'xlsx', 'pptx'].every(extension => filter.extensions.includes(extension))), 'Documents are offered independently of model image support');
+    return { canceled: false, filePaths: [pickedPath, pickedWord, pickedPdf] };
+  };
+  try {
+    await click('[data-testid="attach-files"]');
+    await waitFor(`['picked-note.md', 'picked-document.docx', 'picked-document.pdf'].every(name => document.querySelector('[data-testid="picked-files"]')?.textContent.includes(name))`, 'Plus reads mixed text, Word and PDF selections without a project');
+    assert.match(await evaluate(`document.querySelector('[data-testid="picked-files"]').textContent`), /extracted text/i, 'Document chips describe extracted text instead of a native upload');
+  }
   finally { dialog.showOpenDialog = originalDialog; }
   dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
   try {
@@ -270,6 +283,9 @@ try {
   await click('.send-btn[aria-label="Send message"]');
   await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.some(c => !c.projectId && c.status === 'idle' && c.messages.some(m => m.files?.some(f => f.name === 'picked-note.md'))))`, 'Selected file sends as projectless read-only chat context');
   assert.ok(fixtureRequests.some(request => request.body?.messages?.some(message => typeof message.content === 'string' && message.content.includes('SMOKE_PICKED_NOTE')) && !request.body.tools?.length), 'Picked text reaches the model with no workspace tools');
+  assert.ok(fixtureRequests.some(request => request.body?.messages?.some(message => typeof message.content === 'string' && ['SMOKE_DOCX_MARKER', 'Selected table cell', 'SMOKE_PDF_MARKER'].every(marker => message.content.includes(marker))) && !request.body.tools?.length), 'Document text and table cells reach Chat without workspace tools');
+  const documentChat = (await invoke('state:get')).conversations.find(c => !c.projectId && c.messages.some(m => m.files?.some(file => file.name === 'picked-document.docx')));
+  assert.ok(documentChat?.messages.some(message => message.files?.some(file => file.name === 'picked-document.pdf' && file.content.includes('SMOKE_PDF_MARKER'))), 'Extracted document text is saved in projectless chat history');
   const projectRoot = path.join(temporary, 'project'); await fs.mkdir(projectRoot);
   const originalFile = 'hello\ncontext line two\ncontext line three\n';
   await fs.writeFile(path.join(projectRoot, 'hello.txt'), originalFile);

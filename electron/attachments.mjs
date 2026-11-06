@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { DocumentExtractor, DOCUMENT_EXTENSIONS, DOCUMENT_LIMITS } from './document-service.mjs';
 
 const imageTypes = { '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.webp': 'webp', '.gif': 'gif' };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -29,18 +30,22 @@ async function readSelectedFile(filename, limit) {
 // Only native picker selections grant access. The renderer receives opaque IDs,
 // and submitted files provide read-only context, never a new tool workspace.
 export class AttachmentStore {
-  constructor() { this.entries = new Map(); }
-  clear() { this.entries.clear(); }
-  async select(filenames, { images = false } = {}) {
-    if (!Array.isArray(filenames) || filenames.length > 12) throw new Error('Choose up to four text files and eight images.');
+  constructor({ documentExtractor = new DocumentExtractor() } = {}) { this.entries = new Map(); this.documents = documentExtractor; }
+  clear() { this.entries.clear(); this.documents.cancelAll(); }
+  async select(filenames, { images = false, signal, onProgress = () => {} } = {}) {
+    if (!Array.isArray(filenames) || filenames.length > 12) throw new Error('Choose up to four files and eight images.');
     const files = [], selectedImages = [], rejected = [];
+    signal?.throwIfAborted();
     for (const filename of [...new Set(filenames)]) {
       const name = path.basename(filename);
       try {
         const image = imageTypes[path.extname(name).toLowerCase()];
-        if (/\.(?:pdf|docx?|xlsx?|pptx?|zip)$/i.test(name)) throw new Error('This document format is not supported yet. Attach UTF-8 text/code or a supported image.');
+        const document = DOCUMENT_EXTENSIONS.includes(path.extname(name).toLowerCase());
+        if (/\.(?:doc|xls|ppt|docm|xlsm|pptm|zip)$/i.test(name)) throw new Error('Save older or macro-enabled Office files as DOCX, XLSX or PPTX first. ZIP archives cannot be attached.');
         if (image && !images) throw new Error('This connection accepts text only. Choose a text or code file, or switch to an image-capable model.');
-        const loaded = await readSelectedFile(filename, image ? 8 * 1024 * 1024 : 40 * 1024);
+        signal?.throwIfAborted();
+        const limit = image ? 8 * 1024 * 1024 : document ? DOCUMENT_LIMITS.bytes : 40 * 1024;
+        const loaded = await readSelectedFile(filename, limit);
         if (image) {
           if (!isImage(loaded.bytes, image)) throw new Error('The file contents do not match its image format.');
           if (selectedImages.length >= 8) throw new Error('Attach up to eight images.');
@@ -49,17 +54,29 @@ export class AttachmentStore {
           selectedImages.push(encoded);
           continue;
         }
-        if (loaded.bytes.includes(0)) throw new Error('This file is binary. Attach UTF-8 text/code or a supported image.');
-        let content;
-        try { content = new TextDecoder('utf-8', { fatal: true }).decode(loaded.bytes); }
-        catch { throw new Error('This file is not UTF-8 text. Save it as UTF-8, then select it again.'); }
+        let content, details = {};
+        if (document) {
+          onProgress({ name, index: files.length + 1, total: filenames.length });
+          const extracted = await this.documents.extract(loaded.bytes, { filename: name, signal });
+          content = extracted.content;
+          details = { format: extracted.format, ...(extracted.pages ? { pages: extracted.pages } : {}), ...(extracted.sheets ? { sheets: extracted.sheets } : {}), ...(extracted.slides ? { slides: extracted.slides } : {}) };
+        } else {
+          if (loaded.bytes.includes(0)) throw new Error('This file is binary. Attach UTF-8 text/code, PDF, Office or a supported image.');
+          try { content = new TextDecoder('utf-8', { fatal: true }).decode(loaded.bytes); }
+          catch { throw new Error('This file is not UTF-8 text. Save it as UTF-8, then select it again.'); }
+        }
+        signal?.throwIfAborted();
         const lines = content.split(/\r?\n/).length;
-        if (lines > 500) throw new Error('Attach up to 500 lines per text file. Use a project selection for a smaller excerpt.');
-        if (files.length >= 4) throw new Error('Attach up to four text files.');
+        if (!document && lines > 500) throw new Error('Attach up to 500 lines per text file. Use a project selection for a smaller excerpt.');
+        if (files.length >= 4) throw new Error('Attach up to four files.');
+        if (content.length + files.reduce((sum, file) => sum + file.characters, 0) > 60000) throw new Error('Attach files with at most 60,000 extracted characters total. Split larger documents.');
         const id = randomUUID();
-        this.entries.set(id, { filename: loaded.filename, revision: digest(loaded.bytes), name });
-        files.push({ id, name, bytes: loaded.bytes.length, characters: content.length, lines });
-      } catch (error) { rejected.push(`${name}: ${error.code === 'ENOENT' ? 'File no longer exists.' : error.code === 'EACCES' || error.code === 'EPERM' ? 'The file could not be read.' : error.message}`); }
+        this.entries.set(id, { filename: loaded.filename, revision: digest(loaded.bytes), name, limit, ...(document ? { content, details } : {}) });
+        files.push({ id, name, bytes: loaded.bytes.length, characters: content.length, lines, ...details });
+      } catch (error) {
+        if (signal?.aborted) { for (const file of files) this.entries.delete(file.id); throw new Error('File reading cancelled. Your draft and previous attachments are kept.'); }
+        rejected.push(`${name}: ${error.code === 'ENOENT' ? 'File no longer exists.' : error.code === 'EACCES' || error.code === 'EPERM' ? 'The file could not be read.' : error.message}`);
+      }
     }
     // Bound outstanding selections; old unused picker IDs expire naturally.
     while (this.entries.size > 128) this.entries.delete(this.entries.keys().next().value);
@@ -71,9 +88,9 @@ export class AttachmentStore {
     for (const id of ids) {
       const selected = this.entries.get(id);
       if (!selected) throw new Error('This file selection expired. Remove it and attach the file again.');
-      const { bytes } = await readSelectedFile(selected.filename, 40 * 1024);
+      const { bytes } = await readSelectedFile(selected.filename, selected.limit || 40 * 1024);
       if (digest(bytes) !== selected.revision) throw new Error(`${selected.name} changed after selection. Remove it and attach it again.`);
-      files.push({ name: selected.name, content: new TextDecoder('utf-8', { fatal: true }).decode(bytes) });
+      files.push({ name: selected.name, content: selected.content ?? new TextDecoder('utf-8', { fatal: true }).decode(bytes), ...(selected.details || {}) });
     }
     return files;
   }

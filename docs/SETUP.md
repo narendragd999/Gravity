@@ -2,13 +2,13 @@
 
 ## Run the desktop
 
-Double-click **`Gravity-1.7.1-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
+Double-click **`Gravity-1.8.0-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
 
 `npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`, including the website runtime. `npm run pack` creates an unpacked desktop distribution from existing inputs; run `npm run dist` first to prepare those inputs and the bundled website service.
 
 For the website setup UI during source development, run `node scripts/package-web2api.mjs` once to prepare `release/Gravity-Web2API`. Use a Windows Node installation with its adjacent `LICENSE` for this packaging command. The regular packaged executable needs no such step.
 
-A packaged executable still needs a usable website account or model API connection. The optional standalone Gemini and Claude bridges are separate from the four bundled websites. See the [Claude Windows guide](CLAUDE-WEB2API-WINDOWS.md) for the included Python bridge.
+A packaged executable still needs a usable website account or model API connection. The optional standalone Gemini and Claude bridges are separate from the four bundled websites. See the [Claude Windows guide](CLAUDE-WEB2API-WINDOWS.md) for the included Python bridge, or [connections explained](CONNECTIONS-EXPLAINED.md) for the difference between a model provider, Gravity's local API, and the two browser connection methods.
 
 ## Connect a website with minimum configuration
 
@@ -29,6 +29,8 @@ If setup fails, follow the recovery action beside the error. **Connection detail
 After you close the separate sign-in browser, Gravity opens the saved session to check it. If that **verification browser** shows a security check, complete it yourself and **keep that browser open**. Gravity waits on the same page for up to two minutes and continues automatically when it becomes ready.
 
 If the check keeps repeating, use **Use your normal Chrome tab** when the recovery screen appears and follow Browser Connector setup below. To stop the wait earlier, click **Cancel setup**, then open **Settings → Browser Connector**. Keep a new, empty ChatGPT tab open in your normal Chrome profile. Gravity retains the saved dedicated sign-in. Website security checks can still recur; changing the app's sandbox is not a supported remedy.
+
+With Browser Connector, Gravity opens an owned task tab for the request. If that tab shows a security check, it is brought forward once. Complete the check yourself and keep that tab open; Gravity waits on the same page for up to two minutes before submitting the prompt. If the wait expires before submission, the task tab is retained for a later explicit retry. Gravity rechecks its website, history and draft before use. Cancellation or a service-worker restart does not replay the request. Website response tests allow up to three minutes, while ordinary API tests retain their shorter allowance.
 
 ## Optional Browser Connector extension
 
@@ -71,7 +73,21 @@ The Get started page separates bundled website setup, the Browser Connector exte
 3. Check the file chips above the message box. Click a chip's **×** to remove it. Cancelling the picker keeps your current draft and attachments.
 4. Type what you want Gravity to do with the files, then press **Enter** or **Send**. You can also send a file without typing a message.
 
-UTF-8 text/code files are supported in every chat, without opening a project. Attach up to four files or project excerpts, with 60,000 characters combined; each picked text file must be at most 40 KiB and 500 lines. PNG, JPEG, WebP and GIF are supported when the selected connection accepts images, with up to eight images, 8 MiB each and a 24 MiB combined encoded limit. PDF, Office and ZIP files are currently unsupported and show an individual error; attach exported UTF-8 text instead.
+UTF-8 text/code and PDF, DOCX, XLSX and PPTX documents are supported in every chat, without opening a project. Gravity extracts document text locally and sends that text as message context. Document images, visual layout and macros are not sent as native document input. Spreadsheet formulas are not calculated; the reader uses stored values/cached formula results.
+
+| Input | Limit |
+| --- | --- |
+| Combined text/code/documents/project excerpts | Four files or excerpts; 60,000 characters total |
+| Picked UTF-8 text/code | 40 KiB and 500 lines per file |
+| PDF/Office document | 10 MiB per file; extracted output must fit the combined character limit |
+| PDF | 50 pages; selectable text required |
+| PowerPoint | 50 slides |
+| Excel | 20 sheets, 2,000 rows and 10,000 cells |
+| PNG/JPEG/WebP/GIF images | Image-capable connection required; eight images, 8 MiB each and 24 MiB combined encoded data |
+
+The reader runs in a separate process with a deadline and bounded input, XML and Office archive expansion. It rejects protected, damaged, macro-containing or oversized files with a specific message rather than silently truncating them. Legacy DOC/XLS/PPT and macro formats need a modern, macro-free **Save As** copy. General ZIP uploads are unsupported. Scanned or image-only PDFs need an OCR text copy, or page images sent to an image-capable connection.
+
+While a document is being read, the composer shows **Reading…** with a **Cancel** button. Cancelling, switching drafts or closing the app stops owned reading work. Previous accepted attachments remain available after cancellation, and a delayed result cannot attach to a different draft.
 
 Files provide read-only message context and their text is saved in chat history and backups. They do not give the agent permission to edit their original folder. If a text file changes after selection, remove it and attach it again before sending. To edit project files, use **Open folder**, choose **Build**, and select the appropriate permissions.
 

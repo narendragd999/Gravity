@@ -99,6 +99,29 @@ test('attachment snapshots round-trip without private access metadata and invali
   }
 });
 
+test('document attachment metadata survives backups while invalid formats and structure counts reject atomically', async t => {
+  const f = await fixture(t), chat = f.store.createConversation({ mode: 'chat' });
+  const snapshots = [
+    { name: 'source.pdf', content: 'Page 1\nDocument text\nPage 2\nSecond page', format: 'pdf', pages: 2 },
+    { name: 'word.docx', content: 'Word table text', format: 'docx' },
+    { name: 'sheet.xlsx', content: 'Sheet: Revenue\nA1: 42', format: 'xlsx', sheets: 1 },
+    { name: 'slides.pptx', content: 'Slide 1\nTitle\nSlide 2\nDetails', format: 'pptx', slides: 2 },
+  ];
+  f.store.data.conversations.find(c => c.id === chat.id).messages.push({ role: 'user', content: 'Review these extracted documents.',
+    files: snapshots.map(file => ({ ...file, id: 'private-native-id', filename: path.join(f.root, 'private', file.name), parserExecutable: 'private-parser.exe' })) });
+  const backup = exportData(f.store); assert.deepEqual(backup.conversations[0].messages[0].files, snapshots);
+  const restoredFile = path.join(f.root, 'document-restored.json'), restored = new Store(restoredFile);
+  importData(restored, JSON.stringify(backup)); assert.deepEqual(restored.data.conversations[0].messages[0].files, snapshots);
+  const persisted = await fs.readFile(restoredFile, 'utf8');
+  assert.ok(!persisted.includes('private-native-id')); assert.ok(!persisted.includes('private-parser.exe')); assert.ok(!persisted.includes('filename'));
+  const before = structuredClone(restored.data);
+  for (const invalidDetails of [{ format: 'docm' }, { format: 'raw-file' }, { pages: 51 }, { pages: 0 }, { pages: 1.5 }, { sheets: 21 }, { slides: '2' }]) {
+    const invalid = structuredClone(backup); Object.assign(invalid.conversations[0].messages[0].files[0], invalidDetails);
+    assert.throws(() => importData(restored, JSON.stringify(invalid)), /invalid file attachments/);
+    assert.deepEqual(restored.data, before); assert.equal(await fs.readFile(restoredFile, 'utf8'), persisted);
+  }
+});
+
 test('idle legacy profile is verified, copied atomically, reusable after original release removal and preserved for rollback', async t => {
   const f = await fixture(t); await legacy(f);
   const result = await prepareWebsiteData({ destination: f.destination, sources: [f.source], isBusy: async () => false });

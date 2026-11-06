@@ -28,11 +28,12 @@ export async function pageBridge(action, adapter, payload = {}) {
     }
     return null;
   };
-  const challenge = () => !!elements(['iframe[src*="challenges.cloudflare.com"]', 'iframe[src*="recaptcha"][title*="challenge"]', '[data-testid="challenge-page"]']).length || /^(just a moment|verify you are human|access denied)/i.test(document.title.trim());
+  const securityCheck = () => !!elements(['iframe[src*="challenges.cloudflare.com"]', 'iframe[src*="recaptcha"][title*="challenge"]', 'iframe[title*="challenge" i]', '#challenge-running', '#challenge-stage', '#challenge-form', '[data-testid="challenge-page"]', '[data-testid="captcha"]']).length || /^(just a moment|verify you are human)/i.test(document.title.trim());
+  const challenge = () => securityCheck() || /^access denied/i.test(document.title.trim());
   const siteError = () => challenge() ? `${adapter.name} requires a browser verification or sign-in. Complete it yourself in Chrome and retry.` : `${adapter.name} has no supported chat composer. Sign in in Chrome and open a new chat; if already signed in, the website layout may have changed.`;
   const busy = () => elements(adapter.stop).some(available);
   const jobs = globalThis.__antigravityStudioDOMJobs ??= new Map();
-  if (action === 'probe') return { connected: !!composer() && !challenge(), busy: busy(), error: composer() && !challenge() ? undefined : siteError() };
+  if (action === 'probe') return { connected: !!composer() && !challenge(), busy: busy(), verificationRequired: securityCheck(), error: composer() && !challenge() ? undefined : siteError() };
   if (action === 'cancel') {
     const job = jobs.get(payload.id);
     if (job) { const button = single(adapter.stop); if (available(button)) button.click(); job.abort(new Error('The application cancelled this browser request.')); }

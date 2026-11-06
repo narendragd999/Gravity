@@ -60,7 +60,7 @@ If the browser says the page cannot be reached, inspect the Start window for its
 
 ## 5. Add the provider in Gravity
 
-1. Open **Gravity-1.7.1-x64.exe**.
+1. Open **Gravity-1.8.0-x64.exe**.
 2. Open **Settings → Models & providers**.
 3. Click **Add provider**.
 4. Enter these values:

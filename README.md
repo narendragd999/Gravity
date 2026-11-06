@@ -4,7 +4,7 @@ A portable Windows desktop workspace for AI chat, local projects, and coding age
 
 ## Run Gravity
 
-Double-click **`Gravity-1.7.1-x64.exe`** in `release/`. No app installation, Node.js, Python, or Git is required. The website service and its Node runtime are included in this executable. Copy it to any folder on a supported Windows 10/11 x64 computer and launch it there. Install Chrome or Edge to connect a website account.
+Double-click **`Gravity-1.8.0-x64.exe`** in `release/`. No app installation, Node.js, Python, or Git is required. The website service and its Node runtime are included in this executable. Copy it to any folder on a supported Windows 10/11 x64 computer and launch it there. Install Chrome or Edge to connect a website account.
 
 Gravity starts its Browser Connector and local API automatically. Saved Web2API bridge profiles and a configured Gemini bridge also start with the app. Each service has its own status and startup preference; an unavailable bridge does not prevent the desktop from opening. Explicit startup preferences from an existing profile are retained.
 
@@ -49,11 +49,11 @@ Text is larger by default, with saved **100%, 110%, and 125%** size choices and 
 
 If the reopened verification browser shows a security check, **keep it open** and complete the check yourself. Gravity waits on that page for up to two minutes. If checks keep repeating, use **Use your normal Chrome tab** and follow Browser Connector setup. Saved sign-ins are retained.
 
-The composer **+** opens a native file picker. Attach UTF-8 text/code files to any chat, or supported images to an image-capable connection. Selected files appear as removable chips. **Open folder** selects a project; choose **Build** to edit project files. See [attachment limits](docs/SETUP.md#attach-files-to-a-chat) and the [OpenCode source comparison](docs/OPENCODE-STANDARDIZATION.md).
+The composer **+** opens a native file picker. Attach UTF-8 text/code, PDF, DOCX, XLSX or PPTX files to any chat, or supported images to an image-capable connection. Documents are read locally into bounded text snapshots; chips show the format and page/sheet/slide count where available. Cancel stops document reading without sending a prompt. **Open folder** selects a project; choose **Build** to edit project files. See [attachment limits](docs/SETUP.md#attach-files-to-a-chat) and the [OpenCode source comparison](docs/OPENCODE-STANDARDIZATION.md).
 
 ## Use Gravity from another app
 
-The local API normally starts at **`http://127.0.0.1:4318/v1`**. Open its settings page to copy the current URL and generated access token. Paste them into any client that supports an OpenAI-compatible API. The token is Gravity's local access key, separate from upstream provider keys.
+The local API normally starts at **`http://127.0.0.1:4318/v1`**. Open its settings page to copy the current URL and generated access token. Paste them into any client that supports an OpenAI-compatible API. The token is Gravity's local access key, separate from upstream provider keys. A **provider** tells Gravity where to get a model response; the **local API/gateway** lets another app request that response through Gravity. See [connections explained](docs/CONNECTIONS-EXPLAINED.md) for examples and why website setup opens a separate Chrome profile.
 
 | Method | Endpoint | Authentication |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ Provider credentials stored in desktop state use Windows user encryption. Standa
 
 The repository includes [standalone Web2API sources](bridges/README.md) for Gemini/Claude and the new [DeepSeek, Qwen, ChatGPT, and Z.ai bridge](docs/MULTI-WEB2API.md). The new bridge uses direct requests or dedicated website profiles, exposes `http://127.0.0.1:4320/v1`, and has no Browser Connector extension dependency. Each standalone service has its own runtime and private configuration.
 
-Gravity 1.7 adds normal-browser sign-in for all four standalone websites, staged recovery and safe diagnostics, Chat mode, capability checks, saved-data migration and backups, and project context/review/Undo/run guidance. See [release notes](docs/RELEASE-1.7.1.md) and the [included Claude Web2API setup guide](docs/CLAUDE-WEB2API-WINDOWS.md).
+Gravity 1.8 adds local PDF/Office text extraction with cancellation and tighter document bounds, plus visible same-tab security recovery in normal Chrome. It retains the 1.7 setup, cleaner desktop, Chat/Plan/Build controls, saved-data migration/backups and project context/review/Undo/run guidance. See [release notes](docs/RELEASE-1.8.0.md), [product priorities and the OrbitDesk naming proposal](docs/PRODUCT-DIRECTION-2026-11-06.md), and the [included Claude Web2API setup guide](docs/CLAUDE-WEB2API-WINDOWS.md).
 
 Use Node.js 24 with npm on Windows:
 
@@ -98,6 +98,6 @@ npm run test:desktop
 
 Tests use local fixtures and disposable profiles. See [validation results](docs/VALIDATION.md) for their scope.
 
-[Setup and API examples](docs/SETUP.md) · [Browser setup](docs/BROWSER-CONNECTOR.md) · [Gravity 1.7.1 release](docs/RELEASE-1.7.1.md) · [Advanced Web2API](docs/UNIVERSAL-WEB2API.md) · [Permissions](docs/PERMISSIONS.md)
+[Setup and API examples](docs/SETUP.md) · [Browser setup](docs/BROWSER-CONNECTOR.md) · [Gravity 1.8.0 release](docs/RELEASE-1.8.0.md) · [Advanced Web2API](docs/UNIVERSAL-WEB2API.md) · [Permissions](docs/PERMISSIONS.md)
 
 Gravity is an independent application. It is not Google's Antigravity binary or private agent backend. See [research and scope](docs/reverse-engineering.md).

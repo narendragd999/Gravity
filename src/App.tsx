@@ -9,6 +9,7 @@ import ChatConnection from './ChatConnection';
 import { AgentMode, AppState, Conversation, Invoke, Message, PermissionMode, ProviderCapabilities, PickedFile, WorkspaceContext, errorText, initialState, invoke, modelLabel, supportsImages } from './types';
 
 type PanelTab = 'files' | 'changes' | 'terminal' | 'artifacts';
+const fileDescription = (file: PickedFile) => `${file.format ? `${file.format.toUpperCase()} · extracted text` : 'Read-only text'} · ${file.pages ? `${file.pages} pages` : file.sheets ? `${file.sheets} sheets` : file.slides ? `${file.slides} slides` : `${file.lines} lines`}`;
 export default function App() {
   const [state, setState] = useState<AppState>(initialState);
   const [selected, setSelected] = useState<string | null>(null);
@@ -22,6 +23,8 @@ export default function App() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [pickedFiles, setPickedFiles] = useState<PickedFile[]>([]);
   const [pickingFiles, setPickingFiles] = useState(false);
+  const [fileReading, setFileReading] = useState('');
+  const pickerRequest = useRef<string | undefined>(undefined);
   const [contexts, setContexts] = useState<WorkspaceContext[]>([]);
   const [capabilities, setCapabilities] = useState<{ key: string; value: ProviderCapabilities }>();
   const imagesAllowed = useRef(false);
@@ -115,7 +118,7 @@ export default function App() {
   const [loading, setLoading] = useState(!!window.desktop);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const draftRevision = useRef(0);
-  useEffect(() => { draftRevision.current++; }, [selected, projectId]);
+  useEffect(() => { draftRevision.current++; const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {}); }, [selected, projectId]);
   const messageEnd = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
@@ -144,6 +147,7 @@ export default function App() {
   useEffect(() => { setReviewPath(undefined); setReviewProjectId(undefined); }, [project?.id]);
   useEffect(() => { if (!window.desktop) return; void refresh().catch(e => setError(errorText(e))).finally(() => setLoading(false)); return window.desktop.onEvent(event => {
     if (event.type === 'state') void refresh().catch(e => setError(errorText(e)));
+    if (event.type === 'attachment-progress' && event.requestId === pickerRequest.current) setFileReading(`Reading ${event.name || 'document'}…`);
     if (event.type === 'delta' && event.conversationId && event.messageId) setState(current => ({ ...current, conversations: current.conversations.map(c => c.id === event.conversationId ? { ...c, messages: c.messages.some(m => m.id === event.messageId) ? c.messages.map(m => m.id === event.messageId ? { ...m, content: event.content ?? m.content + (event.text || '') } : m) : [...c.messages, { id: event.messageId!, role: 'assistant', content: event.content ?? event.text ?? '', createdAt: new Date().toISOString() }] } : c) }));
   }); }, [refresh]);
   useEffect(() => { document.documentElement.dataset.theme = state.settings.theme; }, [state.settings.theme]);
@@ -151,7 +155,7 @@ export default function App() {
   useEffect(() => { if (!providerId || !state.providers.some(p => p.id === providerId)) { const latest = [...state.conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).find(c => state.providers.some(p => p.id === c.providerId)); const preferred = state.providers.find(p => p.id === latest?.providerId) || state.providers.find(p => p.managedBy !== 'browser-connector' && p.hasApiKey) || state.providers.find(p => p.managedBy === 'browser-connector'); setProviderId(preferred?.id || ''); setModel(preferred?.defaultModel || ''); } }, [state.providers, state.conversations, providerId]);
   useEffect(() => { if (autoScroll.current) messageEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [active?.messages, active?.status]);
   useEffect(() => { autoScroll.current = true; setScrolledUp(false); if (selected !== createdForSend.current) { setPrompt(''); setAttachments([]); setPickedFiles([]); setContexts([]); } createdForSend.current = undefined; if (active) { setProjectId(active.projectId); setProviderId(active.providerId || ''); setModel(active.model); setMode(active.mode); setPermissionMode(active.permissionMode || 'ask'); } }, [selected]);
-  const newConversation = useCallback(() => { draftRevision.current++; createdForSend.current = undefined; setSelected(null); setHistory(false); setError(''); setPrompt(''); setAttachments([]); setPickedFiles([]); setContexts([]); setMode('chat'); setPermissionMode('ask'); setTimeout(() => composerRef.current?.focus(), 20); }, []);
+  const newConversation = useCallback(() => { draftRevision.current++; const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {}); createdForSend.current = undefined; setSelected(null); setHistory(false); setError(''); setPrompt(''); setAttachments([]); setPickedFiles([]); setContexts([]); setMode('chat'); setPermissionMode('ask'); setTimeout(() => composerRef.current?.focus(), 20); }, []);
   useEffect(() => { const handleKey = (e: KeyboardEvent) => { if (!(e.ctrlKey || e.metaKey)) return; if (e.key === 'n') { e.preventDefault(); newConversation(); } if (e.key === ',') { e.preventDefault(); setSettingsPage('setup'); } if (e.key === 'b') { e.preventDefault(); setSidebar(s => !s); } if (e.key === 'k') { e.preventDefault(); setHistory(h => !h); } }; window.addEventListener('keydown', handleKey); return () => window.removeEventListener('keydown', handleKey); }, [newConversation]);
   const doAction = async (fn: () => Promise<void>) => { setError(''); try { await fn(); } catch (e) { setError(errorText(e)); } };
   const addProject = () => doAction(async () => { const p = await call<{ id: string } | null>('project:add'); if (p) { setProjectId(p.id); setSelected(null); setPermissionMode('ask'); setHistory(false); setWorkspace(true); setPanelTab('files'); } });
@@ -198,9 +202,10 @@ export default function App() {
   const changeMode = (value: AgentMode) => doAction(async () => { if (active) await call('conversation:update', { id: active.id, mode: value }); setMode(value); });
   const pickFiles = async () => {
     const destination = draftRevision.current;
-    setPickingFiles(true); setError('');
+    const requestId = crypto.randomUUID(); pickerRequest.current = requestId;
+    setPickingFiles(true); setFileReading('Choose files to attach…'); setError('');
     try {
-      const result = await call<{ files: PickedFile[]; images: string[]; rejected: string[] }>('attachments:choose', { providerId: provider?.id, model: chosenModel });
+      const result = await call<{ files: PickedFile[]; images: string[]; rejected: string[] }>('attachments:choose', { requestId, providerId: provider?.id, model: chosenModel });
       if (draftRevision.current !== destination) return;
       const next = [...pickedFiles, ...result.files];
       if (next.length + contexts.length > 4 || next.reduce((sum, file) => sum + file.characters, 0) + contexts.reduce((sum, item) => sum + item.content.length, 0) > 60000) throw new Error('Attach up to four text files or selections, with 60,000 characters total.');
@@ -209,7 +214,7 @@ export default function App() {
       if (result.rejected.length) setError(result.rejected.join(' '));
       composerRef.current?.focus();
     } catch (error) { if (draftRevision.current === destination) setError(errorText(error)); }
-    finally { setPickingFiles(false); }
+    finally { if (pickerRequest.current === requestId) { pickerRequest.current = undefined; setPickingFiles(false); setFileReading(''); } }
   };
   const attachContext = (context: WorkspaceContext) => {
     const next = [...contexts.filter(item => !(item.projectId === context.projectId && item.path === context.path && item.startLine === context.startLine && item.endLine === context.endLine)), context];
@@ -245,7 +250,8 @@ export default function App() {
       </section> : <div className="message-list">{active.messages.map(message => <MessageView key={message.id} message={message} providerName={provider?.name || 'Agent'} call={call} onError={setError} openArtifact={openArtifact} onReviewFile={reviewFile} />)}{running && (!active.messages.length || active.messages[active.messages.length - 1]?.role !== 'assistant' || !active.messages[active.messages.length - 1]?.content) && <div className="thinking"><BrandMark /><span>Working on it</span><span className="thinking-dots"><i /><i /><i /></span></div>}<div ref={messageEnd} /></div>}
       </div>
       <div className="composer-area"><ChatConnection key={`${provider?.id}:${chosenModel}`} provider={provider} model={chosenModel} state={state} conversation={active} capabilities={chosenCapabilities} disabled={!!running || sending} call={call} onSettings={() => setSettingsPage('providers')} onBrowserSetup={() => setSettingsPage('browser')} onWebsiteSetup={() => setSettingsPage('setup')} onUseProvider={useProvider} /><RequestStatus conversation={active} />{scrolledUp && <button className="jump-latest" onClick={() => { autoScroll.current = true; messageEnd.current?.scrollIntoView({ behavior: 'smooth' }); }}><ArrowDown size={14} />Latest</button>}{error && <div className="composer-error" role="alert"><span>{error}</span><button className="icon-btn" onClick={() => setError('')} aria-label="Dismiss error"><X size={14} /></button></div>}<form className={`composer ${running ? 'is-working' : ''}`} onSubmit={e => { e.preventDefault(); void send(); }} onPaste={handlePaste} onDragOver={handleDragOver} onDrop={handleDrop}>
-  {pickedFiles.length > 0 && <div className="composer-contexts" data-testid="picked-files">{pickedFiles.map(file => <div className="composer-context-chip" key={file.id}><FileCode2 size={14} /><span>{file.name}<small>{file.lines} lines · read-only attachment</small></span><button type="button" className="icon-btn" aria-label={`Remove ${file.name} attachment`} onClick={() => setPickedFiles(files => files.filter(item => item.id !== file.id))}><X size={12} /></button></div>)}</div>}
+  {pickingFiles && <div className="composer-reading" role="status" data-testid="file-reading"><Loader2 size={14} className="spin" /><span>{fileReading}</span><button type="button" className="text-btn" data-testid="cancel-file-reading" onClick={() => { const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(e => setError(errorText(e))); }}>Cancel</button></div>}
+  {pickedFiles.length > 0 && <div className="composer-contexts" data-testid="picked-files">{pickedFiles.map(file => <div className="composer-context-chip" key={file.id}><FileCode2 size={14} /><span>{file.name}<small>{fileDescription(file)}</small></span><button type="button" className="icon-btn" aria-label={`Remove ${file.name} attachment`} onClick={() => setPickedFiles(files => files.filter(item => item.id !== file.id))}><X size={12} /></button></div>)}</div>}
   {contexts.length > 0 && <div className="composer-contexts" data-testid="composer-contexts">{contexts.map((context, index) => <div className="composer-context-chip" key={`${context.projectId}:${context.path}:${context.startLine}:${context.endLine}`} title={`${context.path} · Saved lines ${context.startLine}–${context.endLine}`}><FileCode2 size={13} /><span>{context.label}<small>Lines {context.startLine}–{context.endLine} · saved file</small></span><button type="button" className="icon-btn" aria-label={`Remove ${context.label} context`} onClick={() => setContexts(items => items.filter((_, i) => i !== index))}><X size={12} /></button></div>)}</div>}
   {attachments.length > 0 && (
     <div className="composer-attachments">
@@ -260,7 +266,7 @@ export default function App() {
   <textarea ref={composerRef} aria-label="Message your agent" placeholder={running ? 'Your request is running…' : attachments.length ? 'Add a message or press Enter to send image…' : chosenMode === 'chat' ? 'Ask a question or talk through an idea…' : 'Describe what you want to plan or build…'} value={prompt} onChange={e => { setPrompt(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!running) void send(); } }} onPaste={handlePaste} disabled={sending} rows={2} />
   <div className="composer-controls">
     <div className="composer-options">
-      <button type="button" className="icon-btn add-context" data-testid="attach-files" disabled={pickingFiles || sending} onClick={() => void pickFiles()} aria-label="Attach files" title="Attach text, code or images">{pickingFiles ? <Loader2 size={17} className="spin" /> : <Plus size={19} />}</button>
+      <button type="button" className="icon-btn add-context" data-testid="attach-files" disabled={pickingFiles || sending} onClick={() => void pickFiles()} aria-label="Attach files" title="Attach text, code, PDF, Office or images">{pickingFiles ? <Loader2 size={17} className="spin" /> : <Plus size={19} />}</button>
       <label className={`icon-btn attachment-btn ${canAttachImages ? '' : 'unavailable'}`} title={canAttachImages ? 'Attach image (or paste with Ctrl+V)' : 'This connection does not accept images'}><ImageIcon size={17} /><input type="file" accept="image/*" multiple disabled={!canAttachImages || sending} style={{ display: 'none' }} onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} /></label>
       <div className="model-selector"><Cpu size={14} /><select aria-label="Model" value={provider ? JSON.stringify([provider.id, chosenModel]) : ''} onChange={e => changeModel(e.target.value)} disabled={running || sending || !state.providers.length}>{!provider && <option value="">Connect a model</option>}{state.providers.map(p => <optgroup label={p.name} key={p.id}>{[...new Set([...p.models, p.defaultModel, ...(p.id === provider?.id ? [chosenModel] : [])])].filter(Boolean).map(m => <option value={JSON.stringify([p.id, m])} key={m}>{modelLabel(m)}</option>)}</optgroup>)}</select><ChevronDown size={12} /></div><span className="composer-divider" /><div className="mode-selector"><select aria-label="Agent mode" value={chosenMode} onChange={e => changeMode(e.target.value as AgentMode)} disabled={running || sending}><option value="chat">Chat</option><option value="plan">Plan</option><option value="build">Build</option></select><ChevronDown size={12} /></div></div><div className="send-controls">{!provider && <button className="text-btn" type="button" onClick={() => setSettingsPage('setup')}>Set up<ArrowRight size={13} /></button>}{running ? <button type="button" className="send-btn stop-btn" aria-label="Stop agent" title="Stop agent" onClick={() => doAction(async () => { if (active) await call('conversation:stop', { id: active.id }); })}><Square size={15} fill="currentColor" /></button> : <button className="send-btn" aria-label="Send message" title="Send · Enter" disabled={(!prompt.trim() && !attachments.length && !pickedFiles.length) || sending || permissionSaving || pickingFiles}>{sending ? <Loader2 size={17} className="spin" /> : <ArrowUp size={19} />}</button>}</div></div></form><div className="composer-permissions">{chosenMode === 'chat' ? <span className="permission-context" data-testid="chat-mode-note">Replies only · Choose Build to edit project files.</span> : <><PermissionsMenu key={selected || ('draft-' + (projectId || 'personal'))} value={chosenPermission} disabled={!!running || sending || permissionSaving} planning={chosenMode === 'plan'} onChange={changePermission} /><span className="permission-context">{chosenMode === 'plan' ? 'Plan mode: inspection only' : 'Applies to this conversation'}</span></>}<span className="composer-keyboard-hint">Enter to send · Shift Enter for a new line</span></div></div>
       </>}

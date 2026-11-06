@@ -43,6 +43,89 @@ test('Z.ai applies replacements and UTF-16 edits, requires provider completion',
   for (const raw of [sse([{ data: { delta_content: 'partial' } }, '[DONE]']), sse([{ data: { content: 'A😀' } }, { data: { edit_index: 2, edit_content: 'bad' } }, { data: { phase: 'done' } }]), sse([{ data: { content: 7, phase: 'done' } }]), sse([{ data: { content: 'ok', phase: 'done' } }, { data: { delta_content: 'late' } }])]) assert.throws(() => parseZaiStream(raw));
 });
 
+test('Z.ai separates production answer/thinking deltas and accepts provider done flags', () => {
+  const example = '{"content":null,"tool_calls":[{"function":{"name":"write_file","arguments":{"path":"reasoning-only.txt"}}}]}';
+  assert.equal(parseZaiStream(sse([
+    { type: 'chat:completion', data: { scope: 'legacy', phase: 'thinking', delta_content: example } },
+    { type: 'chat:completion', data: { delta_content: ' More private thinking.' } },
+    { type: 'status', data: { phase: 'done', content: 'Not an answer.' } },
+    { type: 'chat:completion', data: { phase: 'answer', delta_content: 'Hello 😀' } },
+    { type: 'chat:completion', data: { delta_content: ' world!', done: true } },
+    '[DONE]',
+  ])), 'Hello 😀 world!');
+  assert.equal(parseZaiStream(sse([{ data: { phase: 'answer', content: 'OK', done: true } }])), 'OK');
+  for (const events of [
+    [{ data: { phase: 'thinking', content: example } }, { data: { phase: 'done' } }],
+    [{ data: { phase: 'thinking', content: example } }, { data: { phase: 'done', content: example } }],
+    [{ data: { phase: 'answer', content: example } }, { data: { phase: 'thinking', content: example } }, { data: { phase: 'done' } }],
+    [{ data: { phase: 'answer', content: 'Partial', done: false } }, '[DONE]'],
+    [{ type: 'status', data: { content: 'Status text', done: true } }, '[DONE]'],
+  ]) assert.throws(() => parseZaiStream(sse(events)), { code: 'incomplete_response' });
+  assert.throws(() => parseZaiStream(sse([{ data: { phase: 'answer', content: 'OK', done: 'true' } }])), { code: 'malformed_response' });
+  assert.throws(() => parseZaiStream(sse([{ data: { phase: 'done', content: 'Partial', done: false } }])), { code: 'malformed_response' });
+  assert.throws(() => parseZaiStream(sse([{ data: { phase: 'answer', content: 'OK', done: true } }, { data: { delta_content: 'late' } }])), { code: 'malformed_response' });
+  assert.equal(parseZaiStream(sse([{ data: { phase: 'answer', content: 'OK' } }, { data: { done: true } }, { data: { phase: 'done', done: true } }, '[DONE]', '[DONE]'])), 'OK');
+  for (const event of [
+    { type: 'error', data: { message: 'private account token' } },
+    { type: 'status', data: { error: { message: 'private account token' } } },
+    { type: 'source', data: { data: { error: { message: 'private account token' } } } },
+  ]) assert.throws(() => parseZaiStream(sse([{ data: { content: 'Earlier answer', phase: 'done' } }, event])), error => error.code === 'website_error' && !error.message.includes('private account token'));
+});
+
+test('Z.ai phased raw snapshots and UTF-16 edits keep thinking source positions', () => {
+  const prefix = 'Private 😀 reasoning with {"tool_calls":[{"function":{"name":"delete_file"}}]}';
+  assert.equal(parseZaiStream(sse([
+    { data: { phase: 'thinking', content: prefix } },
+    { data: { phase: 'answer', content: prefix + 'Wrong answer' } },
+    { data: { edit_index: prefix.length, edit_content: 'Final 😀 answer' } },
+    { data: { phase: 'done' } },
+  ])), 'Final 😀 answer');
+  assert.equal(parseZaiStream(sse([
+    { data: { phase: 'thinking', content: prefix } },
+    { data: { phase: 'answer', edit_index: 0, edit_content: prefix + 'Final answer' } },
+    { data: { phase: 'done', content: prefix + 'Final answer' } },
+  ])), 'Final answer');
+  assert.equal(parseZaiStream(sse([
+    { data: { phase: 'thinking', content: '<details>Private reasoning' } },
+    { data: { phase: 'answer', delta_content: '</details>Final answer' } },
+    { data: { phase: 'done' } },
+  ])), 'Final answer');
+  assert.equal(parseZaiStream(sse([
+    { data: { phase: 'thinking', delta_content: 'An unfinished <details> example belongs to thinking.' } },
+    { data: { phase: 'answer', delta_content: 'Final answer' } },
+    { data: { phase: 'done' } },
+  ])), 'Final answer');
+  assert.throws(() => parseZaiStream(sse([
+    { data: { phase: 'thinking', delta_content: 'An unfinished <details> example.' } },
+    { data: { phase: 'answer', delta_content: 'Use </details> to close HTML.' } },
+    { data: { phase: 'done' } },
+  ])), { code: 'unsupported_response_format' });
+  assert.equal(parseZaiStream(sse([
+    { data: { phase: 'thinking', delta_content: '<details>'.repeat(400) } },
+    { data: { phase: 'answer', delta_content: 'Final answer' } },
+    { data: { phase: 'done' } },
+  ])), 'Final answer');
+  for (const thinking of ['```html\n', 'An unfinished "']) {
+    assert.equal(parseZaiStream(sse([
+      { data: { phase: 'thinking', delta_content: thinking } },
+      { data: { phase: 'answer', delta_content: '<details>Private reasoning</details>Final answer' } },
+      { data: { phase: 'done' } },
+    ])), 'Final answer');
+  }
+  for (const field of ['content', 'edit_content']) {
+    assert.throws(() => parseZaiStream(sse([
+      { data: { phase: 'thinking', content: 'The answer is 42.' } },
+      { data: { phase: 'answer', [field]: 'The answer is 43.' } },
+      { data: { phase: 'done' } },
+    ])), { code: 'unsupported_response_format' });
+  }
+  assert.throws(() => parseZaiStream(sse([
+    { data: { phase: 'thinking', content: 'Hello' } },
+    { data: { phase: 'answer', content: 'Hello' } },
+    { data: { phase: 'done' } },
+  ])), { code: 'incomplete_response' });
+});
+
 test('Z.ai removes only explicit provider reasoning and preserves answer code', () => {
   const code = '<details><summary>Example</summary>keep me</details>\n```xml\n<tool_call>literal</tool_call>\n```';
   assert.equal(parseZaiStream(sse([{ data: { content: `<details type="reasoning">scratch</details>\n${code}` } }, { data: { phase: 'done' } }])), code);
@@ -67,9 +150,18 @@ test('Z.ai reasoning examples never become answers and unknown channels fail saf
     [{ data: { content: 'Incomplete answer' } }, '[DONE]'],
   ]) assert.throws(() => parseZaiStream(sse(events)), { code: 'incomplete_response' });
   for (const events of [
-    [{ data: { phase: 'thinking', delta_content: 'Not a verified channel' } }],
-    [{ data: { phase: 'thinking' } }, { data: { delta_content: 'Inherited unknown phase' } }],
+    [{ data: { phase: 'unverified', delta_content: 'Not a verified channel' } }],
+    [{ data: { phase: 'unverified' } }, { data: { delta_content: 'Inherited unknown phase' } }],
     [{ data: { channel: 'analysis', content: 'Unknown explicit channel' } }],
+    [{ data: { channel: 'final' } }, { data: { phase: 'answer', content: 'Unverified channel alias' } }],
+    [{ data: { phase: 'tool_call', delta_arguments: '{"name":"write_file"}' } }, { data: { phase: 'answer', content: 'Tool output' } }],
+    [{ data: { phase: 'tool_response', content: 'Tool output' } }],
+    [{ data: { phase: 'answer', scope: 'subagent', content: 'Another agent output', done: true } }],
+    [{ data: { phase: 'answer', content: 'Earlier answer' } }, { data: { content_blocks: [{ type: 'tool_calls', content: [] }], done: true } }],
+    [{ data: { phase: 'answer', content: 'Earlier answer' } }, { data: { delta_name: 'write_file', done: true } }],
+    [{ data: { phase: 'answer', version: 1, content: 'Unverified versioned snapshot', done: true } }],
+    [{ version: 1, data: { phase: 'answer', delta_content: 'Unverified versioned stream', done: true } }],
+    [{ data: { phase: 'answer', message_version: 99, delta_content: 'Unknown version', done: true } }],
   ]) assert.throws(() => parseZaiStream(sse([...events, { data: { phase: 'done' } }])), { code: 'unsupported_response_format' });
 });
 
@@ -206,6 +298,7 @@ test('isolated installed browser submits only intercepted fixture requests', { t
   for (const fixture of [
     { id: 'chatgpt', body: patchGPT(), expected: 'Hello world!' },
     { id: 'zai', body: sse([{ data: { content: 'OK', phase: 'done' } }]), expected: 'OK' },
+    { id: 'zai', body: sse([{ type: 'chat:completion', data: { phase: 'thinking', delta_content: '{"tool_calls":[{"function":{"name":"write_file"}}]}' } }, { type: 'chat:completion', data: { phase: 'answer', delta_content: 'OK', done: true } }]), expected: 'OK' },
     { id: 'zai', body: sse([{ data: { delta_content: 'partial' } }, '[DONE]']), error: 'incomplete_response' },
     { id: 'chatgpt', body: completeGPT('unused'), draft: 'saved draft', error: 'draft_present' },
   ]) {

@@ -106,13 +106,17 @@ export function parseChatGPTStream(raw) {
 }
 
 // The pinned Z.ai protocol reference folds snapshots and UTF-16 edits into one
-// raw string. Reasoning is carried inside <details> blocks, not in an invented
-// thinking/answer phase vocabulary. Split only after all edits have settled.
+// raw string. Older replies carry reasoning inside <details> blocks. The public
+// production frontend prod-fe-1.1.128 also defines thinking/answer phases; track
+// their raw positions so edits still use website offsets. Split after edits.
 // Reference: glm-proxy cc8165b675af2db10fb6ae85aa01cf33568c2e46,
-// internal/zbridge/zai.go and sse_reasoning_test.go. No live capture is implied.
-function zaiLiteralEnd(raw, index) {
+// internal/zbridge/zai.go and sse_reasoning_test.go; public frontend provenance
+// is in ../THIRD_PARTY.md. No live account capture is implied.
+function zaiLiteralEnd(raw, index, limit = raw.length) {
   // JSON strings and Markdown examples can contain literal HTML. Never change
   // tool arguments, or confuse a quoted tag with a provider channel delimiter.
+  // Lexical context from thinking cannot extend into a later answer phase.
+  if (limit < raw.length) raw = raw.slice(0, limit);
   if (raw[index] === '"') {
     let end = index + 1;
     while (end < raw.length && raw[end] !== '"') end += raw[end] === '\\' ? 2 : 1;
@@ -137,10 +141,11 @@ function zaiLiteralEnd(raw, index) {
   return index;
 }
 
-function zaiDetailsEnd(raw, index) {
-  let depth = 1;
+function zaiDetailsEnd(raw, index, reasoning) {
+  let depth = 1, spanEnd = index;
   while (index < raw.length) {
-    const literal = zaiLiteralEnd(raw, index);
+    if (index >= spanEnd) spanEnd = zaiPhaseSpanEnd(raw, reasoning, index);
+    const literal = zaiLiteralEnd(raw, index, spanEnd);
     if (literal > index) { index = literal; continue; }
     const tag = /^(?:<details\b[^>]*>|<\/details\s*>)/i.exec(raw.slice(index));
     if (tag) {
@@ -151,11 +156,28 @@ function zaiDetailsEnd(raw, index) {
   }
 }
 
-function zaiAnswerChannel(raw) {
-  let answer = '', index = 0, leadingReasoning = false;
+function zaiPhaseSpanEnd(raw, reasoning, index) {
+  if (!reasoning) return raw.length;
+  let end = index + 1;
+  while (end < raw.length && reasoning[end] === reasoning[index]) end++;
+  return end;
+}
+
+function zaiAnswerChannel(raw, reasoning) {
+  let answer = '', index = 0, spanEnd = 0, leadingReasoning = false;
+  const append = (start, end) => {
+    if (!reasoning) { answer += raw.slice(start, end); return; }
+    while (start < end) {
+      while (start < end && reasoning[start]) start++;
+      const from = start;
+      while (start < end && !reasoning[start]) start++;
+      answer += raw.slice(from, start);
+    }
+  };
   while (index < raw.length) {
-    const literal = zaiLiteralEnd(raw, index);
-    if (literal > index) { answer += raw.slice(index, literal); index = literal; continue; }
+    if (index >= spanEnd) spanEnd = zaiPhaseSpanEnd(raw, reasoning, index);
+    const literal = zaiLiteralEnd(raw, index, spanEnd);
+    if (literal > index) { append(index, literal); index = literal; continue; }
     const opener = /^<details\b[^>]*>/i.exec(raw.slice(index));
     if (opener) {
       const explicit = /\btype\s*=\s*(["'])reasoning\1/i.test(opener[0]);
@@ -164,32 +186,59 @@ function zaiAnswerChannel(raw) {
       // provider wrappers without a summary are the verified reasoning shape.
       const summary = /^\s*<summary\b/i.test(raw.slice(index + opener[0].length));
       if (explicit || (bare && !summary)) {
-        const close = zaiDetailsEnd(raw, index + opener[0].length);
+        const close = zaiDetailsEnd(raw, index + opener[0].length, reasoning);
+        // Explicit thinking can quote an unfinished HTML example. Its masked
+        // text must not consume a later answer, or become an answer itself.
+        if (close === undefined && reasoning?.[index]) {
+          while (index < raw.length && reasoning[index]) index++;
+          continue;
+        }
         if (close === undefined) throw bridgeError('Z.ai ended inside its reasoning block. No partial answer was accepted.', 502, 'incomplete_response');
+        if (reasoning?.[index]) {
+          const closingStart = close - /<\/details\s*>$/i.exec(raw.slice(index, close))[0].length;
+          for (let cursor = index + opener[0].length; cursor < closingStart; cursor++) {
+            if (!reasoning[cursor] && !/\s/.test(raw[cursor])) throw bridgeError('Z.ai returned an ambiguous reasoning boundary. No answer or tool call was accepted.', 502, 'unsupported_response_format');
+          }
+        }
         if (!answer.trim()) { leadingReasoning = true; answer = ''; }
         index = close; continue;
       }
-      const close = zaiDetailsEnd(raw, index + opener[0].length) ?? raw.length;
-      answer += raw.slice(index, close); index = close; continue;
+      const close = zaiDetailsEnd(raw, index + opener[0].length, reasoning) ?? raw.length;
+      append(index, close); index = close; continue;
     }
-    answer += raw[index++];
+    append(index, index + 1); index++;
   }
   return leadingReasoning ? answer.trimStart() : answer;
 }
 
 export function parseZaiStream(raw) {
   let text = '', completed = false, terminated = false, phase, channel;
+  const reasoning = new Uint8Array(OUTPUT_CHARACTERS);
+  const unsupported = () => bridgeError('Z.ai returned an unsupported response channel. No answer or tool call was accepted.', 502, 'unsupported_response_format');
   for (const event of decodeEvents(raw)) {
     if (event.done) { terminated = true; continue; }
     if (terminated) throw malformed('Z.ai');
     const value = event.value;
     if (!object(value)) throw malformed('Z.ai');
-    if (value?.error || value?.data?.error || value?.data?.data?.error) throw bridgeError('Z.ai returned an error. Check the login browser and account limits.');
+    if (value.type === 'error' || value?.error || value?.data?.error || value?.data?.data?.error) throw bridgeError('Z.ai returned an error. Check the login browser and account limits.');
     const data = value?.data;
     if (data === undefined) continue;
     if (!object(data)) throw malformed('Z.ai');
+    // Source/status/citation events have their own data; only completions can
+    // supply an answer or mark it complete in the public frontend.
+    if (value.type !== undefined && value.type !== 'chat:completion') continue;
+    if (Object.hasOwn(data, 'scope')) {
+      if (typeof data.scope !== 'string') throw malformed('Z.ai');
+      if (data.scope !== 'legacy') throw unsupported();
+    }
+    if (Object.hasOwn(data, 'done') && typeof data.done !== 'boolean') throw malformed('Z.ai');
+    if (data.phase === 'done' && data.done === false) throw malformed('Z.ai');
+    // Website tools and structured agent snapshots have separate frontend
+    // decoders. Never silently discard them and accept a stale text result.
+    if (Object.hasOwn(value, 'version') || Object.hasOwn(data, 'version') || Object.hasOwn(data, 'message_version') || Object.hasOwn(data, 'content_blocks') || Object.hasOwn(data, 'tool_calls') || Object.hasOwn(data, 'function_call') || data.delta_name || data.delta_arguments || data.metadata?.tool_call_id) throw unsupported();
     const contentFields = ['edit_content', 'content', 'delta_content'].filter(key => Object.hasOwn(data, key));
     if (contentFields.some(key => typeof data[key] !== 'string') || contentFields.length > 1) throw malformed('Z.ai');
+    const priorPhase = phase;
     if (Object.hasOwn(data, 'phase')) {
       if (typeof data.phase !== 'string') throw malformed('Z.ai');
       phase = data.phase;
@@ -198,22 +247,34 @@ export function parseZaiStream(raw) {
       if (typeof data.channel !== 'string') throw malformed('Z.ai');
       channel = data.channel;
     }
-    // Unknown content-bearing channels must not leak reasoning or authorize a
-    // tool. New website formats require their own verified decoder fixtures.
-    if (contentFields.length && ((phase !== undefined && phase !== 'done') || channel !== undefined)) {
-      throw bridgeError('Z.ai returned an unsupported response channel. No answer or tool call was accepted.', 502, 'unsupported_response_format');
-    }
+    // Only the production frontend's verified answer/thinking phases are
+    // accepted. A completion marker does not reclassify prior thinking.
+    const contentPhase = phase === 'done' ? priorPhase : phase;
+    if (channel !== undefined || (phase !== undefined && !['answer', 'thinking', 'done'].includes(phase))) throw unsupported();
     if (completed && contentFields.length) throw malformed('Z.ai');
-    if (Object.hasOwn(data, 'edit_content')) {
-      const index = data.edit_index ?? 0;
+    if (contentFields.length) {
+      const field = contentFields[0];
+      const index = field === 'edit_content' ? data.edit_index ?? 0 : field === 'delta_content' ? text.length : 0;
       if (!Number.isInteger(index) || index < 0 || index > text.length || (index > 0 && index < text.length && /[\uD800-\uDBFF]/.test(text[index - 1]) && /[\uDC00-\uDFFF]/.test(text[index]))) throw bridgeError('Z.ai returned an invalid content edit.', 502, 'malformed_response');
-      text = text.slice(0, index) + data.edit_content;
-    } else if (Object.hasOwn(data, 'content')) text = data.content;
-    else if (Object.hasOwn(data, 'delta_content')) text += data.delta_content;
-    if (text.length > OUTPUT_CHARACTERS) throw bridgeError('Z.ai response exceeded the supported size.', 502, 'response_too_large');
-    if (data.phase === 'done') completed = true;
+      const replacement = data[field];
+      const next = text.slice(0, index) + replacement;
+      if (next.length > OUTPUT_CHARACTERS) throw bridgeError('Z.ai response exceeded the supported size.', 502, 'response_too_large');
+      // Unchanged prefixes in full snapshots/replayed edits retain their
+      // channel. Repeating earlier thinking in an answer snapshot cannot leak
+      // that thinking, or reinterpret its tool-call examples as actions.
+      let unchanged = 0;
+      while (contentPhase !== 'thinking' && index + unchanged < text.length && unchanged < replacement.length && text[index + unchanged] === replacement[unchanged]) unchanged++;
+      // A shared prefix ending inside previous thinking cannot establish
+      // whether this is a cumulative edit or a phase-local snapshot. Returning
+      // only its changed suffix would corrupt the answer; reject the ambiguity.
+      if (unchanged && unchanged < replacement.length && index + unchanged < text.length && reasoning[index + unchanged]) throw unsupported();
+      if (unchanged && /[\uD800-\uDBFF]/.test(replacement[unchanged - 1]) && /[\uDC00-\uDFFF]/.test(replacement[unchanged])) unchanged--;
+      reasoning.fill(contentPhase === 'thinking' ? 1 : 0, index + unchanged, next.length);
+      text = next;
+    }
+    if (data.phase === 'done' || data.done === true) completed = true;
   }
-  text = zaiAnswerChannel(text);
+  text = zaiAnswerChannel(text, reasoning);
   if (!completed || !text.trim()) throw bridgeError('Z.ai did not return a completed answer. No partial reply was accepted.', 502, 'incomplete_response');
   return text;
 }

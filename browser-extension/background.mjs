@@ -8,6 +8,9 @@ let auth = null, pendingPair = null, initialized = false, initialization, loopin
 let connection = 'disconnected', lastError = '';
 let authGeneration = 0, ownedWrites = Promise.resolve(), connectionWrites = Promise.resolve();
 const active = new Map();
+// Retain only task tabs that failed security verification before prompt injection.
+// An explicit later app request can reuse one after the same fresh-page checks.
+const verificationTabs = new Map();
 let sites = SITES.map(site => ({ id: site.id, connected: false, busy: false, error: 'Open this service and sign in in Chrome.' }));
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const cleanError = error => String(error?.message || error || 'Browser connector operation failed.').replaceAll(auth?.token || '\0', '[redacted]').slice(0, 700);
@@ -39,7 +42,8 @@ function readWithin(operation, deadline, message, job) {
 
 async function persistOwned() {
   const ownedJobs = [...active.values()].filter(job => job.tabId !== undefined).map(({ id, siteId, tabId }) => ({ id, siteId, tabId }));
-  ownedWrites = ownedWrites.catch(() => {}).then(() => chrome.storage.session.set({ ownedJobs }));
+  const recoveryTabs = [...verificationTabs].map(([siteId, tabId]) => ({ siteId, tabId }));
+  ownedWrites = ownedWrites.catch(() => {}).then(() => chrome.storage.session.set({ ownedJobs, verificationTabs: recoveryTabs }));
   await ownedWrites;
 }
 async function persistConnection() {
@@ -76,15 +80,19 @@ async function initialize() {
     auth = saved.connectorAuth?.token ? saved.connectorAuth : null;
     pendingPair = saved.pendingPair || null;
     connection = auth ? 'connecting' : pendingPair ? 'approval' : 'disconnected';
-    const recovery = await chrome.storage.session.get('ownedJobs');
+    const recovery = await chrome.storage.session.get(['ownedJobs', 'verificationTabs']);
+    const interrupted = Array.isArray(recovery.ownedJobs) ? recovery.ownedJobs : [];
+    for (const tab of Array.isArray(recovery.verificationTabs) ? recovery.verificationTabs : []) {
+      if (siteById(tab?.siteId) && Number.isInteger(tab.tabId) && !interrupted.some(job => job?.tabId === tab.tabId)) verificationTabs.set(tab.siteId, tab.tabId);
+    }
     // A restarted worker cannot safely reconstruct a partially submitted request.
-    for (const job of recovery.ownedJobs || []) {
+    for (const job of interrupted) {
       const site = siteById(job.siteId);
       if (!site || !Number.isInteger(job.tabId)) continue;
       try { await readWithin(() => chrome.scripting.executeScript({ target: { tabId: job.tabId }, world: 'ISOLATED', injectImmediately: true, func: pageBridge, args: ['cancel', site, { id: job.id }] }), Date.now() + 1500, 'Chrome did not acknowledge cancellation.'); } catch { /* Tab may have closed or navigated to sign-in. */ }
       if (auth) try { await rpc('/connector/results', { id: job.id, siteId: job.siteId, error: 'The browser connector restarted before completing this request. Retry from the app.' }); } catch { /* Old jobs may already be cancelled. */ }
     }
-    await chrome.storage.session.set({ ownedJobs: [] });
+    await persistOwned();
     initialized = true;
     await chrome.alarms.create('connector-wake', { periodInMinutes: 0.5 });
   })();
@@ -94,20 +102,21 @@ async function scanSites() {
   let tabs;
   try { tabs = await readWithin(() => chrome.tabs.query({ url: SITES.map(site => `https://${site.host}/*`) }), Date.now() + 3000, 'Chrome did not finish checking open tabs. Refresh the extension status and retry.'); }
   catch (error) {
-    sites = SITES.map(site => [...active.values()].some(job => job.siteId === site.id && !job.cancelled)
-      ? { id: site.id, connected: true, busy: true }
+    sites = SITES.map(site => activeSiteStatus(site.id)
+      ? { id: site.id, ...activeSiteStatus(site.id) }
       : { id: site.id, connected: false, busy: false, error: cleanError(error) });
     lastScan = Date.now(); return;
   }
   sites = await Promise.all(SITES.map(async site => {
-    if ([...active.values()].some(job => job.siteId === site.id && !job.cancelled)) return { id: site.id, connected: true, busy: true };
+    const working = activeSiteStatus(site.id);
+    if (working) return { id: site.id, ...working };
     const candidates = tabs.filter(tab => Number.isInteger(tab.id) && siteMatchesUrl(site.id, tab.url)).sort((a, b) => Number(b.active) - Number(a.active) || (b.lastAccessed || 0) - (a.lastAccessed || 0)).slice(0, 3);
     let last = { connected: false, busy: false, error: 'Open this service and sign in in Chrome.' };
     for (const tab of candidates) {
       try {
         const result = (await readWithin(() => chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'ISOLATED', injectImmediately: true, func: pageBridge, args: ['probe', site] }), Date.now() + 1500, 'Chrome did not finish checking this tab. Refresh the website and retry.'))[0]?.result;
-        if (result?.connected) return { id: site.id, ...result };
-        if (result) last = result;
+        if (result?.connected) return { id: site.id, connected: true, busy: !!result.busy, ...(result.error ? { error: String(result.error) } : {}) };
+        if (result) last = { connected: false, busy: !!result.busy, ...(result.error ? { error: String(result.error) } : {}) };
       } catch (error) { last = { connected: false, busy: false, error: `${cleanError(error)} Allow extension access to this site, sign in, and refresh its tab.` }; }
     }
     return { id: site.id, ...last };
@@ -165,11 +174,20 @@ async function cancelJobs(ids) {
 }
 async function disconnect(reason = '') {
   authGeneration++; auth = null; pendingPair = null;
+  verificationTabs.clear();
   connection = 'disconnected'; lastError = reason;
-  await Promise.all([cancelJobs([...active.keys()]), persistConnection()]);
+  await Promise.all([cancelJobs([...active.keys()]), persistConnection(), persistOwned()]);
+}
+function activeSiteStatus(siteId) {
+  const job = [...active.values()].find(job => job.siteId === siteId && !job.cancelled);
+  return job ? { connected: true, busy: true, error: job.waitingForVerification ? 'Complete the security check in the active Chrome task tab. Gravity waits on this same page; no prompt has been submitted.' : undefined } : null;
+}
+function verificationFailure(message) {
+  const error = new Error(message); error.code = 'security_check_required'; return error;
 }
 async function waitForTab(job) {
-  const site = siteById(job.siteId), deadline = Math.min(Date.now() + 45000, job.deadline);
+  const site = siteById(job.siteId);
+  let deadline = Math.min(Date.now() + 45000, job.deadline), securityUntil;
   let lastIssue = 'The page has not exposed its chat input yet.';
   while (Date.now() < deadline) {
     if (job.cancelled || job.generation !== authGeneration) throw new Error('The application cancelled this browser request.');
@@ -185,16 +203,40 @@ async function waitForTab(job) {
         const values = await readWithin(() => chrome.scripting.executeScript({ target: { tabId: job.tabId }, world: 'ISOLATED', injectImmediately: true, func: pageBridge, args: ['probe', site] }), Math.min(deadline, Date.now() + 1500), 'Chrome did not finish checking the chat input.', job);
         if (job.cancelled || job.generation !== authGeneration) throw new Error('The application cancelled this browser request.');
         const probe = values[0]?.result;
-        if (probe?.connected && !probe.busy) return;
+        if (probe?.verificationRequired === true) {
+          securityUntil ??= Math.min(Date.now() + 120000, job.deadline);
+          if (Date.now() >= securityUntil) throw verificationFailure('The website kept requesting security verification. Complete the check in this same Chrome task tab, then explicitly test again in Gravity. No prompt was submitted.');
+          deadline = Math.max(deadline, securityUntil);
+          job.waitingForVerification = true; job.sawVerification = true;
+          if (!job.verificationShown) {
+            job.verificationShown = true; lastScan = 0; lastHeartbeat = 0;
+            try {
+              const shown = await readWithin(() => chrome.tabs.update(job.tabId, { active: true }), Math.min(deadline, Date.now() + 1500), 'Chrome could not show the security-check tab.', job);
+              if (Number.isInteger(shown?.windowId) && chrome.windows?.update) {
+                const current = chrome.windows.get ? await readWithin(() => chrome.windows.get(shown.windowId), Math.min(deadline, Date.now() + 1500), 'Chrome could not inspect the security-check window.', job) : undefined;
+                await readWithin(() => chrome.windows.update(shown.windowId, { focused: true, ...(current?.state === 'minimized' ? { state: 'normal' } : {}) }), Math.min(deadline, Date.now() + 1500), 'Chrome could not show the security-check window.', job);
+              }
+            }
+            catch (error) {
+              if (job.cancelled || job.generation !== authGeneration) throw error;
+              throw verificationFailure('Chrome could not show the security-check task tab. Open it in Chrome, complete the check, and explicitly test again. No prompt was submitted.');
+            }
+          }
+        } else if (job.waitingForVerification) {
+          job.waitingForVerification = false; lastScan = 0; lastHeartbeat = 0;
+          deadline = Math.min(Date.now() + 45000, job.deadline);
+        }
+        if (probe?.connected && !probe.busy && !probe.verificationRequired) return;
         lastIssue = probe?.error || (probe?.busy ? 'The website is already generating a response.' : 'No supported chat input was found.');
       } catch (error) {
-        if (job.cancelled || job.generation !== authGeneration) throw error;
+        if (job.cancelled || job.generation !== authGeneration || error?.code === 'security_check_required') throw error;
         lastIssue = cleanError(error);
         // Navigation can temporarily make script injection unavailable; poll again.
       }
     }
     await pause(250);
   }
+  if (job.waitingForVerification) throw verificationFailure('The website kept requesting security verification. Complete the check in this same Chrome task tab, then explicitly test again in Gravity. No prompt was submitted.');
   throw new Error(`${site.name} chat input was not ready within 45 seconds. ${lastIssue} No prompt was submitted. Open a new chat and sign in, then retry.`);
 }
 async function runJob(raw, generation = authGeneration) {
@@ -205,13 +247,20 @@ async function runJob(raw, generation = authGeneration) {
     if (active.has(raw.id)) return;
     if ([...active.values()].some(item => item.siteId === raw.siteId)) throw new Error('This service already has an active browser request.');
     job = { id: raw.id, siteId: raw.siteId, tabId: undefined, cancelled: false, generation, deadline: Date.now() + 170000 }; active.set(job.id, job);
-    const tab = await chrome.tabs.create({ url: site.url, active: false }); job.tabId = tab.id; await persistOwned();
+    let tab;
+    const remembered = verificationTabs.get(site.id);
+    if (remembered !== undefined) {
+      try { tab = await readWithin(() => chrome.tabs.get(remembered), Date.now() + 3000, 'Chrome did not finish checking the previous security-check tab. No prompt was submitted.', job); verificationTabs.delete(site.id); }
+      catch (error) { if (!/No tab with id|Tab closed|Invalid tab ID/i.test(error?.message || '')) throw error; verificationTabs.delete(site.id); }
+    }
+    tab ??= await chrome.tabs.create({ url: site.url, active: false }); job.tabId = tab.id; await persistOwned();
     if (job.cancelled || generation !== authGeneration) return;
     await waitForTab(job);
     if (job.cancelled || generation !== authGeneration) return;
     const timeoutMs = Math.min(160000, job.deadline - Date.now());
     if (timeoutMs <= 0) throw new Error('The browser request expired before its prompt could be submitted. Retry from the app.');
     // Submit only once. The absolute deadline also protects against delayed injection.
+    job.runStarted = true;
     const values = await readWithin(() => chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'ISOLATED', injectImmediately: true, func: pageBridge, args: ['run', site, { id: job.id, prompt, timeoutMs, deadlineAt: job.deadline }] }), job.deadline, 'Chrome did not finish this browser request before its deadline. No completed response was accepted. Retry from the app.', job);
     if (job.cancelled || generation !== authGeneration) return;
     const response = values[0]?.result;
@@ -224,6 +273,7 @@ async function runJob(raw, generation = authGeneration) {
     if (!job?.cancelled) lastError = cleanError(error);
   } finally {
     if (job) {
+      if (!success && !job.cancelled && generation === authGeneration && job.sawVerification && !job.runStarted && job.tabId !== undefined) verificationTabs.set(job.siteId, job.tabId);
       active.delete(job.id); await persistOwned();
       if ((success || job.cancelled) && job.tabId !== undefined) try { await chrome.tabs.remove(job.tabId); } catch { /* Already closed. */ }
     }
@@ -250,7 +300,7 @@ async function loop() {
 }
 function publicState() {
   return { connection, error: lastError, pairing: !!pendingPair, paired: !!auth, activeJobs: active.size, extensionVersion, protocol: CONNECTOR_PROTOCOL,
-    sites: SITES.map(site => ({ id: site.id, name: site.name, model: site.model, ...sites.find(value => value.id === site.id), busy: [...active.values()].some(job => job.siteId === site.id) || !!sites.find(value => value.id === site.id)?.busy })) };
+    sites: SITES.map(site => ({ id: site.id, name: site.name, model: site.model, ...sites.find(value => value.id === site.id), ...activeSiteStatus(site.id), busy: [...active.values()].some(job => job.siteId === site.id) || !!sites.find(value => value.id === site.id)?.busy })) };
 }
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || sender.tab) return false;

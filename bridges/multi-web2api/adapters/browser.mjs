@@ -179,12 +179,13 @@ export async function runBrowserTurn(page, siteId, prompt, signal, options = {})
   try {
     await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const readyTimeoutMs = options.readyTimeoutMs ?? 30000;
-    let deadline = Date.now() + readyTimeoutMs, securityUntil;
+    let deadline = Date.now() + readyTimeoutMs, securityUntil, securityShown = false;
     let composer;
     while (Date.now() < deadline) {
       signal?.throwIfAborted();
       if (await visibleChallenge(page)) {
         securityUntil ??= Date.now() + (options.securityCheckTimeoutMs ?? 120000);
+        if (!securityShown) { securityShown = true; await page.bringToFront?.().catch(() => {}); }
         await waitForSecurityCheck(page, { signal, timeoutMs: Math.max(0, securityUntil - Date.now()) });
         deadline = Date.now() + readyTimeoutMs;
       }

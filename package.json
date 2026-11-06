@@ -1,6 +1,6 @@
 {
   "name": "gravity",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "private": true,
   "description": "A portable desktop agent workspace with browser connections and a built-in local API.",
   "author": "Gravity contributors",
@@ -25,12 +25,16 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@thednp/dommatrix": "3.1.2",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.52.2",
+    "pdfjs-dist": "6.5.438",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "saxes": "6.0.0",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
@@ -38,6 +42,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^39.0.0",
     "electron-builder": "^26.0.12",
+    "esbuild": "0.25.12",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
   },
@@ -74,6 +79,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "release/document-build",
+        "to": "documents"
       }
     ],
     "npmRebuild": false,

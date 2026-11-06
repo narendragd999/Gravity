@@ -17,7 +17,9 @@ async function fixture(t) {
     const parent = path.resolve(os.tmpdir());
     assert.equal(path.dirname(absolute), parent);
     assert.ok(path.basename(absolute).startsWith('antigravity-workspace-test-'));
-    await fs.rm(absolute, { recursive: true, force: true });
+    // Windows may release a terminated shell's working-directory handle after
+    // the process exit event. Keep cleanup bounded while that handle settles.
+    await fs.rm(absolute, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
   return root;
 }

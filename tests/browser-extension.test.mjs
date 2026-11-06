@@ -69,7 +69,7 @@ test('result parser never turns examples or malformed tool output into actions',
   assert.throws(() => parseSiteResult('No call.', tools, 'required'), /requested structured tool/);
 });
 
-async function workerFixture({ fetchResult, scriptResult, savedLocal = {}, savedSession = {}, savedTabs = [], advanceTime = false } = {}) {
+async function workerFixture({ fetchResult, scriptResult, savedLocal = {}, savedSession = {}, savedTabs = [], advanceTime = false, windowState = 'normal' } = {}) {
   const local = { ...savedLocal }, session = { ...savedSession }, calls = [], requests = [], tabs = new Map(savedTabs.map(tab => [tab.id, tab])); let tabId = 100;
   let now = Date.now(), nextTimer = 0, pumping = false;
   const timers = new Map();
@@ -92,10 +92,14 @@ async function workerFixture({ fetchResult, scriptResult, savedLocal = {}, saved
     storage: { local: storage(local), session: storage(session) },
     tabs: {
       async query(options) { calls.push(['query', options]); return [...tabs.values()]; },
-      async create(options) { const tab = { id: ++tabId, status: 'complete', ...options }; tabs.set(tab.id, tab); calls.push(['create', options]); return tab; },
+      async create(options) { const tab = { id: ++tabId, windowId: 1, status: 'complete', ...options }; tabs.set(tab.id, tab); calls.push(['create', options]); return tab; },
       async get(id) { if (!tabs.has(id)) throw new Error('Tab closed'); return tabs.get(id); },
-      async update(id, options) { Object.assign(tabs.get(id), options); return tabs.get(id); },
+      async update(id, options) { Object.assign(tabs.get(id), options); calls.push(['update', id, options]); return tabs.get(id); },
       async remove(id) { tabs.delete(id); calls.push(['remove', id]); }
+    },
+    windows: {
+      async get(id) { calls.push(['windowGet', id]); return { id, state: windowState }; },
+      async update(id, options) { calls.push(['windowUpdate', id, options]); return { id, ...options }; }
     },
     scripting: { async executeScript(options) { calls.push(['script', options.args[0], options.target.tabId, options]); return [{ result: scriptResult ? await scriptResult(options) : options.args[0] === 'run' ? { text: 'New fixture answer.' } : { connected: true, busy: false } }]; } }
   };
@@ -213,11 +217,127 @@ test('worker waits for a delayed composer and reduces the remaining generation b
   assert.ok(worker.requests.some(request => request.body?.rawText));
 });
 
+test('Chrome verification promotes only its owned task once and waits for the user beyond ordinary readiness', async () => {
+  let probes = 0, runPayload;
+  const worker = await workerFixture({ advanceTime: true, scriptResult: options => {
+    if (options.args[0] === 'probe') return ++probes <= 240 ? { connected: false, busy: false, verificationRequired: true, error: 'Complete the security check.' } : { connected: true, busy: false };
+    runPayload = options.args[2]; return { text: 'After manual verification.' };
+  } });
+  worker.setAuth({ token: 'fixture-token' }); worker.tabs.set(9, { id: 9, url: 'https://chatgpt.com/c/user-chat', active: true });
+  await worker.runJob({ ...job, id: 'manual-chatgpt-check', siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+  assert.equal(probes, 241, 'Manual verification can complete after the ordinary 45-second input wait');
+  const promoted = worker.calls.filter(call => call[0] === 'update');
+  assert.equal(promoted.length, 1); assert.equal(promoted[0][1], 101); assert.equal(promoted[0][2].active, true);
+  assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1);
+  assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
+  assert.equal(runPayload.timeoutMs, 110000, 'Manual waiting reduces the original remaining generation budget');
+  assert.equal(worker.tabs.has(9), true); assert.equal(worker.tabs.size, 1);
+  assert.equal(worker.requests.find(request => request.body?.rawText).body.rawText, 'After manual verification.');
+});
+
+test('security verification focuses only its owned Chrome window and restores minimized windows without changing normal geometry', async () => {
+  for (const windowState of ['normal', 'maximized', 'minimized']) {
+    let probes = 0;
+    const worker = await workerFixture({ advanceTime: true, windowState, scriptResult: options => options.args[0] === 'probe'
+      ? ++probes <= 2 ? { connected: false, busy: false, verificationRequired: true } : { connected: true, busy: false }
+      : { text: 'User completed security verification.' } });
+    worker.setAuth({ token: 'fixture-token' });
+    worker.tabs.set(9, { id: 9, windowId: 99, url: 'https://chatgpt.com/c/user-chat', active: true });
+    await worker.runJob({ ...job, id: `focus-${windowState}`, siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+    const updates = worker.calls.filter(call => call[0] === 'windowUpdate');
+    assert.equal(updates.length, 1); assert.equal(updates[0][1], 1, 'Only the task window is focused');
+    assert.equal(updates[0][2].focused, true);
+    assert.equal(updates[0][2].state, windowState === 'minimized' ? 'normal' : undefined);
+    assert.equal(worker.calls.filter(call => call[0] === 'windowGet').length, 1);
+    assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
+    assert.equal(worker.tabs.has(9), true);
+  }
+  const ordinary = await workerFixture(); ordinary.setAuth({ token: 'fixture-token' });
+  await ordinary.runJob({ ...job, tools: [] });
+  assert.equal(ordinary.calls.some(call => call[0] === 'windowUpdate' || call[0] === 'windowGet'), false, 'Ordinary requests never focus or resize Chrome');
+});
+
+test('a hung Chrome security window activation settles without submitting a prompt or opening another tab', async () => {
+  const worker = await workerFixture({ advanceTime: true, scriptResult: () => ({ connected: false, busy: false, verificationRequired: true }) });
+  worker.setAuth({ token: 'fixture-token' });
+  worker.chrome.windows.update = () => new Promise(() => {});
+  await worker.runJob({ ...job, siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+  assert.equal(worker.active.size, 0);
+  assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1);
+  assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
+  assert.match(worker.requests.find(request => request.url.endsWith('/results')).body.error, /could not show.*task tab/i);
+  assert.equal(worker.tabs.size, 1, 'The same task tab is retained for manual verification');
+});
+
+test('a persistent security check leaves one owned task tab and an explicit retry reuses it after preflight', async () => {
+  let checking = true;
+  const worker = await workerFixture({ advanceTime: true, scriptResult: options => options.args[0] === 'probe'
+    ? checking ? { connected: false, busy: false, verificationRequired: true } : { connected: true, busy: false }
+    : { text: 'Explicit retry after user verification.' } });
+  worker.setAuth({ token: 'fixture-token' }); worker.tabs.set(9, { id: 9, url: 'https://chatgpt.com/c/user-chat' });
+  const attempt = { ...job, siteId: 'chatgpt', model: 'chatgpt-web', tools: [] };
+  await worker.runJob({ ...attempt, id: 'persistent-check' });
+  assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
+  assert.match(worker.requests.find(request => request.url.endsWith('/results')).body.error, /same Chrome task tab.*No prompt was submitted/);
+  assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1); assert.equal(worker.tabs.size, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(worker.session.verificationTabs)), [{ siteId: 'chatgpt', tabId: 101 }]);
+  checking = false;
+  await worker.runJob({ ...attempt, id: 'explicit-user-retry' });
+  assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1, 'The explicit retry reuses the checked tab instead of creating another challenge tab');
+  assert.equal(worker.calls.filter(call => call[0] === 'script' && call[1] === 'run').length, 1);
+  assert.equal(worker.tabs.has(9), true); assert.equal(worker.tabs.size, 1); assert.equal(worker.session.verificationTabs.length, 0);
+});
+
+test('a retained verification tab that became a user conversation remains untouched on explicit retry', async () => {
+  const worker = await workerFixture({
+    savedSession: { verificationTabs: [{ siteId: 'chatgpt', tabId: 12 }] },
+    savedTabs: [{ id: 12, url: 'https://chatgpt.com/c/manual-user-conversation' }]
+  });
+  assert.equal(worker.calls.some(call => call[0] === 'create' || call[0] === 'script'), false, 'Restart never automatically resumes verification or submits a prompt');
+  worker.setAuth({ token: 'fixture-token' });
+  await worker.runJob({ ...job, id: 'verify-retry-history', siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+  assert.equal(worker.calls.some(call => call[0] === 'create' || call[0] === 'script'), false);
+  assert.equal(worker.tabs.has(12), true); assert.match(worker.requests.find(request => request.url.endsWith('/results')).body.error, /existing conversation/);
+});
+
+test('a security tab that cannot be shown fails within the read deadline without submitting or creating another tab', async () => {
+  const worker = await workerFixture({ advanceTime: true, scriptResult: () => ({ connected: false, busy: false, verificationRequired: true }) });
+  worker.setAuth({ token: 'fixture-token' }); worker.chrome.tabs.update = () => new Promise(() => {});
+  await worker.runJob({ ...job, id: 'unavailable-verification-tab', siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+  assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
+  assert.equal(worker.calls.filter(call => call[0] === 'create').length, 1);
+  assert.match(worker.requests.find(request => request.url.endsWith('/results')).body.error, /could not show.*No prompt was submitted/);
+  assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 1); assert.equal(worker.session.verificationTabs.length, 1);
+});
+
+test('verification waits are cancellable and never accept a late probe or submit after cancellation', async () => {
+  let probes = 0, finishProbe;
+  const worker = await workerFixture({ advanceTime: true, scriptResult: options => {
+    if (options.args[0] === 'probe') return ++probes === 1 ? { connected: false, busy: false, verificationRequired: true } : new Promise(resolve => { finishProbe = resolve; });
+    return { cancelled: true };
+  } });
+  worker.setAuth({ token: 'fixture-token' });
+  const running = worker.runJob({ ...job, id: 'cancel-security-check', siteId: 'chatgpt', model: 'chatgpt-web', tools: [] });
+  for (let i = 0; i < 100 && !finishProbe; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finishProbe, 'function');
+  const waiting = worker.publicState().sites.find(site => site.id === 'chatgpt');
+  assert.equal(waiting.connected, true); assert.equal(waiting.busy, true); assert.match(waiting.error, /same page; no prompt/);
+  await worker.scanSites();
+  const heartbeatSites = worker.publicState().sites.map(({ id, connected, busy, error }) => ({ id, connected, busy, ...(error ? { error } : {}) }));
+  assert.equal(JSON.stringify(heartbeatSites).includes('verificationRequired'), false, 'The internal probe field does not leak into the heartbeat contract');
+  await worker.cancelJobs(['cancel-security-check']); await running;
+  finishProbe({ connected: true, busy: false }); await Promise.resolve();
+  assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
+  assert.equal(worker.requests.some(request => request.body?.rawText), false);
+  assert.equal(worker.tabs.size, 0); assert.equal(worker.session.verificationTabs.length, 0);
+});
+
 test('worker reports composer readiness failure without submitting or claiming completion', async () => {
   const worker = await workerFixture({ advanceTime: true, scriptResult: () => ({ connected: false, busy: false, error: 'Sign in to the website.' }) });
   worker.setAuth({ token: 'fixture-token' });
   await worker.runJob({ ...job, tools: [] });
   assert.equal(worker.calls.some(call => call[0] === 'script' && call[1] === 'run'), false);
+  assert.equal(worker.calls.some(call => call[0] === 'update'), false, 'Ordinary sign-in/layout failures are not treated as interactive security challenges');
   const result = worker.requests.find(request => request.url.endsWith('/results')).body;
   assert.equal(result.rawText, undefined); assert.match(result.error, /45 seconds.*Sign in.*No prompt was submitted/);
   assert.equal(worker.active.size, 0); assert.equal(worker.tabs.size, 1, 'Failure tab remains available for inspection');

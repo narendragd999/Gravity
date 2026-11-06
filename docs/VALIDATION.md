@@ -1,5 +1,14 @@
 # Validation — 3 November 2026
 
+## Version 1.8.0 — 6 November 2026
+
+- **385 Node tests passed**, with no failures or skips, against the final source. TypeScript and Vite production compilation passed. Focused checks cover PDF/DOCX/XLSX/PPTX extraction, Unicode/tables/cached values/presentation order, input/structure/XML/archive/output limits, isolated reader cancellation and timeouts, revision checks, snapshot backup import and Chrome security-tab ownership/reuse. Windows fixture cleanup now waits briefly for terminated process directory handles to settle; descendant termination assertions remain enforced.
+- **Native desktop smoke passed** using authored documents and a local fixture provider. It selects text, Word and PDF through the native dialog boundary, verifies extracted-text chips and projectless no-tool requests, and retains the existing workspace/setup/recovery checks. The document attachment screenshot was visually inspected. The 18 isolated Electron DOM checks also passed after the extension changes.
+- **Windows x64 portable packaging and smoke passed.** The executable launched from a separate folder with spaces, with developer runtimes removed from PATH. All four document formats were selected through the packaged native boundary using a disposable localhost inspector and authored fixtures, and their extracted snapshots reached a local fixture provider with zero project tools. Bundled website-service startup, API authentication, encrypted provider keys and saved preferences also passed without live website inference. This is an isolated launch on the development Windows machine, not a clean virtual-machine certification.
+- The user confirmed that a new ChatGPT Browser Connector chat in Gravity 1.8.0 returned **OK** to “Reply with only OK.” This is user-confirmed live generation, not an agent-observed security-challenge test. Desktop screen capture timed out, so live CAPTCHA recovery could not be observed through the control tool. Website-controlled security requests can recur; the release preserves the sandbox and requires the user to complete CAPTCHA/sign-in challenges.
+- **21 Z.ai decoder checks passed** against verified public frontend phase/completion semantics. They cover legacy snapshots/UTF-16 edits, answer/thinking deltas, provider completion, reasoning exclusion and ambiguous-format rejection. The signed-in GLM 5.3 account remains a separate live acceptance check; structured agent snapshots and unverified formats remain unsupported.
+- OrbitDesk is a proposed name and logo direction; the release product/data identity remains Gravity. See [product direction](PRODUCT-DIRECTION-2026-11-06.md) and [connection/browser explanation](CONNECTIONS-EXPLAINED.md).
+
 ## Version 1.7.1 — 5 November 2026
 
 - **357 Node tests passed** on Windows, with no failures or skips. TypeScript/Vite production build and Windows x64 portable packaging passed.
