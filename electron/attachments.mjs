@@ -10,10 +10,12 @@ const isImage = (bytes, type) => type === 'png' ? bytes.subarray(0, 8).equals(Bu
 
 async function readSelectedFile(filename, limit) {
   if (typeof filename !== 'string' || !path.isAbsolute(filename)) throw new Error('Choose a file using the attachment picker.');
-  const before = await fs.lstat(filename);
-  if (!before.isFile() || before.isSymbolicLink()) throw new Error('Choose a regular file. Folders and linked files cannot be attached.');
   const canonical = await fs.realpath(filename);
-  if (path.resolve(canonical).toLowerCase() !== path.resolve(filename).toLowerCase()) throw new Error('Redirected files cannot be attached.');
+  // An explicit native selection also authorizes its resolved file. Windows
+  // Downloads/OneDrive folders often use junctions or alternate path names.
+  // Keep only that canonical file and verify the opened identity before reading.
+  const before = await fs.lstat(canonical);
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error('Choose a regular file. Folders cannot be attached.');
   const handle = await fs.open(canonical, 'r');
   try {
     const opened = await handle.stat();
@@ -27,12 +29,30 @@ async function readSelectedFile(filename, limit) {
   } finally { await handle.close(); }
 }
 
+function binaryPreview(bytes, name, reason = '') {
+  const shown = Math.min(bytes.length, 1024);
+  const lines = [];
+  for (let index = 0; index < shown; index += 16) {
+    const part = bytes.subarray(index, Math.min(index + 16, shown));
+    lines.push(`${index.toString(16).padStart(8, '0')}  ${[...part].map(value => value.toString(16).padStart(2, '0')).join(' ')}`);
+  }
+  return `Binary file: ${name}\nSize: ${bytes.length} bytes\nSHA-256: ${digest(bytes)}\n${reason ? `Extraction note: ${reason}\n` : ''}Only file metadata and the first ${shown} bytes are available as a hex preview. The full file has not been decoded, executed, or uploaded as a native model file.\n${lines.join('\n')}`;
+}
+
+function decodeText(bytes) {
+  const encoding = bytes[0] === 255 && bytes[1] === 254 ? 'utf-16le' : bytes[0] === 254 && bytes[1] === 255 ? 'utf-16be' : 'utf-8';
+  try {
+    const content = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+    return /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(content) ? undefined : content;
+  } catch { return undefined; }
+}
+
 // Only native picker selections grant access. The renderer receives opaque IDs,
 // and submitted files provide read-only context, never a new tool workspace.
 export class AttachmentStore {
   constructor({ documentExtractor = new DocumentExtractor() } = {}) { this.entries = new Map(); this.documents = documentExtractor; }
   clear() { this.entries.clear(); this.documents.cancelAll(); }
-  async select(filenames, { images = false, signal, onProgress = () => {} } = {}) {
+  async select(filenames, { images = false, signal, ocr = false, onProgress = () => {} } = {}) {
     if (!Array.isArray(filenames) || filenames.length > 12) throw new Error('Choose up to four files and eight images.');
     const files = [], selectedImages = [], rejected = [];
     signal?.throwIfAborted();
@@ -41,12 +61,11 @@ export class AttachmentStore {
       try {
         const image = imageTypes[path.extname(name).toLowerCase()];
         const document = DOCUMENT_EXTENSIONS.includes(path.extname(name).toLowerCase());
-        if (/\.(?:doc|xls|ppt|docm|xlsm|pptm|zip)$/i.test(name)) throw new Error('Save older or macro-enabled Office files as DOCX, XLSX or PPTX first. ZIP archives cannot be attached.');
-        if (image && !images) throw new Error('This connection accepts text only. Choose a text or code file, or switch to an image-capable model.');
+        if (ocr && path.extname(name).toLowerCase() !== '.pdf') throw new Error('Scan PDF with OCR accepts PDF files. Use Attach files for other formats.');
         signal?.throwIfAborted();
-        const limit = image ? 8 * 1024 * 1024 : document ? DOCUMENT_LIMITS.bytes : 40 * 1024;
+        const limit = image && images ? 8 * 1024 * 1024 : DOCUMENT_LIMITS.bytes;
         const loaded = await readSelectedFile(filename, limit);
-        if (image) {
+        if (image && images) {
           if (!isImage(loaded.bytes, image)) throw new Error('The file contents do not match its image format.');
           if (selectedImages.length >= 8) throw new Error('Attach up to eight images.');
           const encoded = `data:image/${image};base64,${loaded.bytes.toString('base64')}`;
@@ -57,21 +76,24 @@ export class AttachmentStore {
         let content, details = {};
         if (document) {
           onProgress({ name, index: files.length + 1, total: filenames.length });
-          const extracted = await this.documents.extract(loaded.bytes, { filename: name, signal });
-          content = extracted.content;
-          details = { format: extracted.format, ...(extracted.pages ? { pages: extracted.pages } : {}), ...(extracted.sheets ? { sheets: extracted.sheets } : {}), ...(extracted.slides ? { slides: extracted.slides } : {}) };
+          try {
+            const extracted = await this.documents.extract(loaded.bytes, { filename: name, signal, ocr });
+            content = extracted.content;
+            details = { format: extracted.format, ...(extracted.pages ? { pages: extracted.pages } : {}), ...(extracted.sheets ? { sheets: extracted.sheets } : {}), ...(extracted.slides ? { slides: extracted.slides } : {}), ...(extracted.ocr ? { ocr: true, ocrLanguage: extracted.ocrLanguage } : {}) };
+          } catch (error) {
+            if (ocr || signal?.aborted || !['no_text', 'encrypted', 'active_content', 'malformed', 'parse_failed'].includes(error.code)) throw error;
+            content = binaryPreview(loaded.bytes, name, error.message); details = { format: 'binary', previewKind: 'binary' };
+          }
         } else {
-          if (loaded.bytes.includes(0)) throw new Error('This file is binary. Attach UTF-8 text/code, PDF, Office or a supported image.');
-          try { content = new TextDecoder('utf-8', { fatal: true }).decode(loaded.bytes); }
-          catch { throw new Error('This file is not UTF-8 text. Save it as UTF-8, then select it again.'); }
+          content = image ? undefined : decodeText(loaded.bytes);
+          if (content === undefined) { content = binaryPreview(loaded.bytes, name, image ? 'This model accepts text only; image pixels cannot be interpreted.' : 'No supported text decoder recognized this file.'); details = { format: 'binary', previewKind: 'binary' }; }
         }
         signal?.throwIfAborted();
         const lines = content.split(/\r?\n/).length;
-        if (!document && lines > 500) throw new Error('Attach up to 500 lines per text file. Use a project selection for a smaller excerpt.');
         if (files.length >= 4) throw new Error('Attach up to four files.');
         if (content.length + files.reduce((sum, file) => sum + file.characters, 0) > 60000) throw new Error('Attach files with at most 60,000 extracted characters total. Split larger documents.');
         const id = randomUUID();
-        this.entries.set(id, { filename: loaded.filename, revision: digest(loaded.bytes), name, limit, ...(document ? { content, details } : {}) });
+        this.entries.set(id, { filename: loaded.filename, revision: digest(loaded.bytes), name, limit, content, details });
         files.push({ id, name, bytes: loaded.bytes.length, characters: content.length, lines, ...details });
       } catch (error) {
         if (signal?.aborted) { for (const file of files) this.entries.delete(file.id); throw new Error('File reading cancelled. Your draft and previous attachments are kept.'); }
@@ -81,6 +103,14 @@ export class AttachmentStore {
     // Bound outstanding selections; old unused picker IDs expire naturally.
     while (this.entries.size > 128) this.entries.delete(this.entries.keys().next().value);
     return { files, images: selectedImages, rejected };
+  }
+  async preview(id) {
+    const selected = this.entries.get(id);
+    if (!selected) throw new Error('This file selection expired. Select the file again to preview it.');
+    const { bytes } = await readSelectedFile(selected.filename, selected.limit);
+    if (digest(bytes) !== selected.revision) throw new Error(`${selected.name} changed after selection. Remove it and attach it again.`);
+    return { name: selected.name, content: selected.content, bytes: bytes.length, characters: selected.content.length,
+      lines: selected.content.split(/\r?\n/).length, ...selected.details };
   }
   async resolve(ids = []) {
     if (!Array.isArray(ids) || ids.length > 4 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('Attach up to four selected text files.');

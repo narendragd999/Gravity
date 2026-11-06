@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Check, CheckCircle2, Copy, Globe2, Loader2, Play, RefreshCw, Square, X } from 'lucide-react';
-import { AppState, Invoke, errorText } from './types';
+import { AppState, Invoke, errorText, responseCheckFor } from './types';
 
 type WebsiteId = 'deepseek' | 'qwen' | 'chatgpt' | 'zai';
 type SetupViewState = {
@@ -71,8 +71,7 @@ export default function Web2ApiSetup({ state, call, onUseProvider, modelSelectio
   const signingIn = setup?.phase === 'login' || setup?.phase === 'signing-in';
   const working = !!setup?.busy || connecting;
   const ready = setup?.phase === 'ready' && !!setup.providerId && !!setup.defaultModel;
-  const checkedResponse = state.providers.find(provider => provider.id === setup?.providerId)?.lastTest;
-  const responseCheck = checkedResponse?.model === setup?.defaultModel ? checkedResponse : undefined;
+  const responseCheck = responseCheckFor(state.providers.find(provider => provider.id === setup?.providerId), setup?.defaultModel || '');
   const selectedWebsite = websites.find(site => site.id === siteId)!;
   const activeWebsite = websites.find(site => site.id === activeSite)!;
   const runCommand = async (label: string, method: string) => {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,10 +13,42 @@ import (
 	"github.com/ikhsan3adi/gemini-web2api/internal/models"
 )
 
+type mockGeminiRequester struct {
+	body     string
+	attempts int
+}
+
+func (m *mockGeminiRequester) Do(req *http.Request) (*http.Response, error) {
+	m.attempts++
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(m.body))}, nil
+}
+
+func newTestApp(cfg config.Config, version string) *App {
+	cfg.CookieFile = ""
+	cfg.LogRequests = false
+	cfg.RetryDelaySec = 0
+	app := New(cfg, version)
+	app.Gem.HTTP = &mockGeminiRequester{}
+	return app
+}
+
+func mockResponseLine(t *testing.T, text string) string {
+	t.Helper()
+	inner, err := json.Marshal([]any{strings.Repeat("metadata", 32), nil, nil, nil, []any{[]any{"candidate", []any{text}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := json.Marshal([]any{[]any{"wrb.fr", "rpc", string(inner)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(outer) + "\n"
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	testVer := "test-version-1.0"
 	cfg := config.Default()
-	app := New(cfg, testVer)
+	app := newTestApp(cfg, testVer)
 	handler := app.Handler()
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -40,7 +73,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestAuthMatrix(t *testing.T) {
 	cfg := config.Default()
 	cfg.APIKeys = []string{"sk-secret-key"}
-	app := New(cfg, "test-version")
+	app := newTestApp(cfg, "test-version")
 	handler := app.Handler()
 
 	// 1. No key -> 401
@@ -98,7 +131,7 @@ func TestAuthMatrix(t *testing.T) {
 
 func TestCORSPreflight(t *testing.T) {
 	cfg := config.Default()
-	app := New(cfg, "test-version")
+	app := newTestApp(cfg, "test-version")
 	handler := app.Handler()
 
 	req := httptest.NewRequest("OPTIONS", "/v1/chat/completions", nil)
@@ -131,7 +164,7 @@ func TestMarshalNoEscapeHTML(t *testing.T) {
 func TestChunkedTransferEncoding(t *testing.T) {
 	// Verify that the server can parse request bodies via net/http transparent dechunking.
 	cfg := config.Default()
-	app := New(cfg, "test")
+	app := newTestApp(cfg, "test")
 	handler := app.Handler()
 
 	body := `{"model":"gemini-3.6-flash","messages":[{"role":"user","content":"hi"}]}`
@@ -140,10 +173,9 @@ func TestChunkedTransferEncoding(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// Should not be 400 (bad request) or 500 — it will be 502 (upstream unreachable) or 200,
-	// but not a body-parsing error.
-	if rec.Code == http.StatusBadRequest {
-		t.Errorf("Handler rejected valid JSON body, got %d", rec.Code)
+	// The mocked upstream is empty; the valid request must reach generation and fail.
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("Expected an empty upstream failure, got %d", rec.Code)
 	}
 }
 
@@ -185,7 +217,7 @@ func TestResponsesSequenceNumberOrder(t *testing.T) {
 	// Verify responses format: the non-streaming endpoint should accept valid structure.
 	// The responses API uses "input" field, not "messages".
 	cfg := config.Default()
-	app := New(cfg, "test")
+	app := newTestApp(cfg, "test")
 	handler := app.Handler()
 
 	body := `{"model":"gemini-3.6-flash","input":"test prompt"}`
@@ -194,15 +226,14 @@ func TestResponsesSequenceNumberOrder(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// Should not be 400 (bad request) — may be 502 (upstream unreachable)
-	if rec.Code == http.StatusBadRequest {
-		t.Errorf("Responses endpoint rejected valid JSON, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("Expected an empty upstream failure, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestModelHeaders(t *testing.T) {
 	cfg := config.Default()
-	app := New(cfg, "test")
+	app := newTestApp(cfg, "test")
 	handler := app.Handler()
 
 	// 1. Known model: gemini-4-argon
@@ -231,5 +262,67 @@ func TestModelHeaders(t *testing.T) {
 	}
 	if got := rec2.Header().Get("X-Model-Fallback"); got != "true" {
 		t.Errorf("Expected X-Model-Fallback=true for unknown model, got %q", got)
+	}
+}
+
+func TestEmptyUpstreamNeverEmitsSuccessfulCompletion(t *testing.T) {
+	for _, endpoint := range []struct {
+		path, body string
+		stream     bool
+	}{
+		{"/v1/chat/completions", `{"model":"gemini-3.6-flash","messages":[{"role":"user","content":"hi"}]}`, false},
+		{"/v1/chat/completions", `{"model":"gemini-3.6-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`, true},
+		{"/v1/responses", `{"model":"gemini-3.6-flash","input":"hi"}`, false},
+		{"/v1beta/models/gemini-3.6-flash:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, false},
+		{"/v1beta/models/gemini-3.6-flash:streamGenerateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, true},
+	} {
+		t.Run(endpoint.path, func(t *testing.T) {
+			app := newTestApp(config.Default(), "test")
+			upstream := &mockGeminiRequester{}
+			app.Gem.HTTP = upstream
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, httptest.NewRequest("POST", endpoint.path, strings.NewReader(endpoint.body)))
+			if !endpoint.stream && rec.Code != http.StatusBadGateway {
+				t.Fatalf("empty generation status=%d: %s", rec.Code, rec.Body.String())
+			}
+			response := rec.Body.String()
+			if !strings.Contains(response, "Gemini returned no answer") {
+				t.Fatalf("missing actionable error: %s", response)
+			}
+			if !strings.Contains(response, `"code":"empty_response"`) {
+				t.Fatalf("missing empty-response code: %s", response)
+			}
+			if strings.Contains(response, `"finish_reason":"stop"`) || strings.Contains(response, `"finishReason":"STOP"`) || strings.Contains(response, "[DONE]") {
+				t.Fatalf("empty generation marked successful: %s", response)
+			}
+			if endpoint.stream && !strings.Contains(response, "event: error") {
+				t.Fatalf("missing streaming error event: %s", response)
+			}
+			if upstream.attempts != 1 {
+				t.Fatalf("empty generation replayed %d times", upstream.attempts)
+			}
+		})
+	}
+}
+
+func TestMalformedToolResponseFailsBeforeReturningAnyTool(t *testing.T) {
+	for _, endpoint := range []struct{ path, body, answer string }{
+		{"/v1/chat/completions", `{"model":"gemini-3.6-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]}`, "```tool_call\n{\"name\":\"read_file\",\"arguments\":{}}\n```\n```tool_call\nnot-json\n```"},
+		{"/v1/responses", `{"model":"gemini-3.6-flash","input":"hi","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`, "```tool_call\nnot-json\n```"},
+		{"/v1beta/models/gemini-3.6-flash:generateContent", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parameters":{"type":"object"}}]}]}`, "```function_call\nnot-json\n```"},
+	} {
+		t.Run(endpoint.path, func(t *testing.T) {
+			app := newTestApp(config.Default(), "test")
+			upstream := &mockGeminiRequester{body: mockResponseLine(t, endpoint.answer)}
+			app.Gem.HTTP = upstream
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, httptest.NewRequest("POST", endpoint.path, strings.NewReader(endpoint.body)))
+			if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "invalid_tool_call") {
+				t.Fatalf("malformed tool accepted: status=%d, body=%s", rec.Code, rec.Body.String())
+			}
+			if upstream.attempts != 1 {
+				t.Fatalf("malformed tool generation replayed %d times", upstream.attempts)
+			}
+		})
 	}
 }

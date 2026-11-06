@@ -6,10 +6,14 @@ import Settings, { SettingsPage } from './Settings';
 import Workspace from './Workspace';
 import PermissionsMenu from './PermissionsMenu';
 import ChatConnection from './ChatConnection';
+import useComposerDraft from './useComposerDraft';
+import type { ComposerFile } from './useComposerDraft';
+import './composer-enhancements.css';
 import { AgentMode, AppState, Conversation, Invoke, Message, PermissionMode, ProviderCapabilities, PickedFile, WorkspaceContext, errorText, initialState, invoke, modelLabel, supportsImages } from './types';
 
 type PanelTab = 'files' | 'changes' | 'terminal' | 'artifacts';
-const fileDescription = (file: PickedFile) => `${file.format ? `${file.format.toUpperCase()} · extracted text` : 'Read-only text'} · ${file.pages ? `${file.pages} pages` : file.sheets ? `${file.sheets} sheets` : file.slides ? `${file.slides} slides` : `${file.lines} lines`}`;
+const fileDescription = (file: Omit<PickedFile, 'id'>) => file.previewKind === 'binary' || file.format === 'binary' ? `File metadata · ${file.bytes.toLocaleString()} bytes · binary preview` : `${file.ocr ? 'PDF · OCR extracted text' : file.format ? `${file.format.toUpperCase()} · extracted text` : 'Read-only text'} · ${file.pages ? `${file.pages} pages` : file.sheets ? `${file.sheets} sheets` : file.slides ? `${file.slides} slides` : `${file.lines} lines`}`;
+type AttachmentPreview = Omit<ComposerFile, 'id'> & { content: string };
 export default function App() {
   const [state, setState] = useState<AppState>(initialState);
   const [selected, setSelected] = useState<string | null>(null);
@@ -19,33 +23,56 @@ export default function App() {
   const [mode, setMode] = useState<AgentMode>('chat');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask');
   const [permissionSaving, setPermissionSaving] = useState(false);
-  const [prompt, setPrompt] = useState('');
-  const [attachments, setAttachments] = useState<string[]>([]);
-  const [pickedFiles, setPickedFiles] = useState<PickedFile[]>([]);
+  const [loading, setLoading] = useState(!!window.desktop);
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(sending); sendingRef.current = sending;
+  const selectedRef = useRef(selected); selectedRef.current = selected;
+  const draftRevision = useRef(0);
+  const draftKey = selected ? `conversation:${selected}` : `new:${projectId || 'personal'}`;
+  const drafts = useComposerDraft(draftKey, !loading, key => {
+    if (key.startsWith('conversation:')) {
+      const conversation = state.conversations.find(item => item.id === key.slice(13));
+      if (conversation) { setProjectId(conversation.projectId); setSelected(conversation.id); }
+    } else if (key === 'new:personal' || state.projects.some(item => key === `new:${item.id}`)) {
+      setProjectId(key === 'new:personal' ? undefined : key.slice(4)); setSelected(null);
+    }
+  });
+  const { prompt, setPrompt, images: attachments, setImages: setAttachments, files: pickedFiles, setFiles: setPickedFiles, contexts, setContexts, missingFiles, setMissingFiles } = drafts;
   const [pickingFiles, setPickingFiles] = useState(false);
   const [fileReading, setFileReading] = useState('');
   const pickerRequest = useRef<string | undefined>(undefined);
-  const [contexts, setContexts] = useState<WorkspaceContext[]>([]);
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>();
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewGeneration = useRef(0);
   const [capabilities, setCapabilities] = useState<{ key: string; value: ProviderCapabilities }>();
   const imagesAllowed = useRef(false);
-  const createdForSend = useRef<string | undefined>(undefined);
-
-  const addImageFiles = (files: FileList | File[]) => {
+  const addImageFiles = useCallback((files: FileList | File[]) => {
+    if (!drafts.readyRef.current || sendingRef.current) return;
     if (!imagesAllowed.current) { setError('This connection does not accept images. Choose an image-capable API model to attach one.'); return; }
+    const destination = draftRevision.current, ownerKey = drafts.ownerRef.current;
+    const sameDraft = () => drafts.readyRef.current && draftRevision.current === destination && drafts.ownerRef.current === ownerKey && !sendingRef.current;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file.type.startsWith('image/')) {
+        if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)) { setError('Choose a PNG, JPEG, GIF or WebP image.'); continue; }
+        if (file.size > 8 * 1024 * 1024) { setError('Keep each image within 8 MB.'); continue; }
         const reader = new FileReader();
         reader.onload = ev => {
           const result = ev.target?.result as string;
-          if (result && result.startsWith('data:image/')) {
-            setAttachments(prev => [...prev, result]);
+          if (sameDraft() && result && result.startsWith('data:image/')) {
+            setAttachments(prev => {
+              if (!sameDraft()) return prev;
+              if (prev.length >= 8 || prev.reduce((sum, image) => sum + image.length, result.length) > 24 * 1024 * 1024) { setError('Attach up to eight images, with at most 24 MB total.'); return prev; }
+              return [...prev, result];
+            });
           }
         };
+        reader.onerror = () => { if (sameDraft()) setError(`Could not read ${file.name}. Choose the image again.`); };
         reader.readAsDataURL(file);
       }
     }
-  };
+  }, [drafts.readyRef, drafts.ownerRef, setAttachments]);
 
   const handlePaste = (e: React.ClipboardEvent) => {
     if (e.defaultPrevented) return;
@@ -99,7 +126,7 @@ export default function App() {
     };
     window.addEventListener('paste', onGlobalPaste);
     return () => window.removeEventListener('paste', onGlobalPaste);
-  }, []);
+  }, [addImageFiles]);
   const [settingsPage, setSettingsPage] = useState<SettingsPage | null>(null);
   const [sidebar, setSidebar] = useState(true);
   const [workspace, setWorkspace] = useState(false);
@@ -111,20 +138,17 @@ export default function App() {
   const [history, setHistory] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
-  const [error, setError] = useState('');
-  const [sending, setSending] = useState(false);
   const [rename, setRename] = useState<string | null>(null);
   const [renamedTitle, setRenamedTitle] = useState('');
-  const [loading, setLoading] = useState(!!window.desktop);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const draftRevision = useRef(0);
-  useEffect(() => { draftRevision.current++; const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {}); }, [selected, projectId]);
+  useEffect(() => { draftRevision.current++; previewGeneration.current++; setAttachmentPreview(undefined); setPreviewLoading(false); const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {}); }, [selected, projectId]);
   const messageEnd = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
   const [scrolledUp, setScrolledUp] = useState(false);
   const active = state.conversations.find(c => c.id === selected);
   const project = state.projects.find(p => p.id === (active?.projectId || projectId));
+  const projectRef = useRef(project?.id); projectRef.current = project?.id;
   const provider = state.providers.find(p => p.id === (active?.providerId || providerId));
   const hasConfiguredConnection = state.providers.some(p => p.managedBy === 'browser-connector' ? state.browserConnector.paired : p.hasApiKey) || state.bridges.some(b => b.state === 'ready') || state.bridge.running;
   const chosenModel = active?.model || model || provider?.defaultModel || '';
@@ -137,60 +161,65 @@ export default function App() {
   const running = active?.status === 'running';
   const activeRef = useRef(active); activeRef.current = active;
   const refresh = useCallback(async () => { const next = await invoke<AppState>('state:get'); setState(next); }, []);
-  const call: Invoke = useCallback(async <T,>(method: string, args?: unknown) => { const result = await invoke<T>(method, args); if (/^(project:|conversation:|provider:save|provider:remove|provider:test|settings:|approval:|gateway:|bridge:|bridges:|browser:|web2api:|data:)/.test(method) && !['bridge:choose', 'bridges:choose'].includes(method)) await refresh(); return result; }, [refresh]);
+  const call: Invoke = useCallback(async <T,>(method: string, args?: unknown) => { const result = await invoke<T>(method, args); if (/^(project:|conversation:|provider:save|provider:remove|provider:test|provider:discoverAndSave|settings:|approval:|gateway:|bridge:|bridges:|browser:|web2api:|data:)/.test(method) && !['bridge:choose', 'bridges:choose'].includes(method)) await refresh(); return result; }, [refresh]);
   useEffect(() => {
     let cancelled = false;
     if (provider && window.desktop) void invoke<ProviderCapabilities>('provider:capabilities', { id: provider.id, model: chosenModel }).then(value => { if (!cancelled) setCapabilities({ key: capabilityKey, value }); }).catch(() => { /* The backend also checks capabilities before sending. */ });
     return () => { cancelled = true; };
   }, [capabilityKey]);
-  useEffect(() => { setContexts(items => items.filter(item => item.projectId === project?.id)); }, [project?.id]);
   useEffect(() => { setReviewPath(undefined); setReviewProjectId(undefined); }, [project?.id]);
   useEffect(() => { if (!window.desktop) return; void refresh().catch(e => setError(errorText(e))).finally(() => setLoading(false)); return window.desktop.onEvent(event => {
     if (event.type === 'state') void refresh().catch(e => setError(errorText(e)));
+    if (event.type === 'draft-flush') void drafts.flush().then(() => invoke('draft:flushed', { requestId: event.requestId, ok: true }), () => {
+      const message = 'Your drafts could not be saved. Keep Gravity open and retry saving before closing.';
+      setError(message);
+      return invoke('draft:flushed', { requestId: event.requestId, ok: false, error: message });
+    }).catch(() => {});
     if (event.type === 'attachment-progress' && event.requestId === pickerRequest.current) setFileReading(`Reading ${event.name || 'document'}…`);
     if (event.type === 'delta' && event.conversationId && event.messageId) setState(current => ({ ...current, conversations: current.conversations.map(c => c.id === event.conversationId ? { ...c, messages: c.messages.some(m => m.id === event.messageId) ? c.messages.map(m => m.id === event.messageId ? { ...m, content: event.content ?? m.content + (event.text || '') } : m) : [...c.messages, { id: event.messageId!, role: 'assistant', content: event.content ?? event.text ?? '', createdAt: new Date().toISOString() }] } : c) }));
-  }); }, [refresh]);
+  }); }, [refresh, drafts.flush]);
   useEffect(() => { document.documentElement.dataset.theme = state.settings.theme; }, [state.settings.theme]);
   useEffect(() => { document.documentElement.style.setProperty('--ui-scale', String((state.settings.uiScale || 110) / 100)); }, [state.settings.uiScale]);
   useEffect(() => { if (!providerId || !state.providers.some(p => p.id === providerId)) { const latest = [...state.conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).find(c => state.providers.some(p => p.id === c.providerId)); const preferred = state.providers.find(p => p.id === latest?.providerId) || state.providers.find(p => p.managedBy !== 'browser-connector' && p.hasApiKey) || state.providers.find(p => p.managedBy === 'browser-connector'); setProviderId(preferred?.id || ''); setModel(preferred?.defaultModel || ''); } }, [state.providers, state.conversations, providerId]);
   useEffect(() => { if (autoScroll.current) messageEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [active?.messages, active?.status]);
-  useEffect(() => { autoScroll.current = true; setScrolledUp(false); if (selected !== createdForSend.current) { setPrompt(''); setAttachments([]); setPickedFiles([]); setContexts([]); } createdForSend.current = undefined; if (active) { setProjectId(active.projectId); setProviderId(active.providerId || ''); setModel(active.model); setMode(active.mode); setPermissionMode(active.permissionMode || 'ask'); } }, [selected]);
-  const newConversation = useCallback(() => { draftRevision.current++; const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {}); createdForSend.current = undefined; setSelected(null); setHistory(false); setError(''); setPrompt(''); setAttachments([]); setPickedFiles([]); setContexts([]); setMode('chat'); setPermissionMode('ask'); setTimeout(() => composerRef.current?.focus(), 20); }, []);
-  useEffect(() => { const handleKey = (e: KeyboardEvent) => { if (!(e.ctrlKey || e.metaKey)) return; if (e.key === 'n') { e.preventDefault(); newConversation(); } if (e.key === ',') { e.preventDefault(); setSettingsPage('setup'); } if (e.key === 'b') { e.preventDefault(); setSidebar(s => !s); } if (e.key === 'k') { e.preventDefault(); setHistory(h => !h); } }; window.addEventListener('keydown', handleKey); return () => window.removeEventListener('keydown', handleKey); }, [newConversation]);
+  useEffect(() => { autoScroll.current = true; setScrolledUp(false); if (active) { setProjectId(active.projectId); setProviderId(active.providerId || ''); setModel(active.model); setMode(active.mode); setPermissionMode(active.permissionMode || 'ask'); } }, [selected]);
+  const prepareNavigation = useCallback(() => {
+    draftRevision.current++; previewGeneration.current++; setAttachmentPreview(undefined); setPreviewLoading(false);
+    void drafts.flush().catch(() => {});
+    const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(() => {});
+  }, [drafts.flush]);
+  const newConversation = useCallback(() => { prepareNavigation(); setSelected(null); setHistory(false); setError(''); setMode('chat'); setPermissionMode('ask'); setTimeout(() => composerRef.current?.focus(), 20); }, [prepareNavigation]);
+  useEffect(() => { const handleKey = (e: KeyboardEvent) => { if (!(e.ctrlKey || e.metaKey)) return; if (e.key === 'n') { e.preventDefault(); newConversation(); } if (e.key === ',') { e.preventDefault(); setSettingsPage('general'); } if (e.key === 'b') { e.preventDefault(); setSidebar(s => !s); } if (e.key === 'k') { e.preventDefault(); setHistory(h => !h); } }; window.addEventListener('keydown', handleKey); return () => window.removeEventListener('keydown', handleKey); }, [newConversation]);
   const doAction = async (fn: () => Promise<void>) => { setError(''); try { await fn(); } catch (e) { setError(errorText(e)); } };
-  const addProject = () => doAction(async () => { const p = await call<{ id: string } | null>('project:add'); if (p) { setProjectId(p.id); setSelected(null); setPermissionMode('ask'); setHistory(false); setWorkspace(true); setPanelTab('files'); } });
-  const selectConversation = (c: Conversation) => { setSelected(c.id); setHistory(false); setError(''); setAttachments([]); setPickedFiles([]); };
+  const selectProject = (id: string) => { prepareNavigation(); setProjectId(id); setSelected(null); setPermissionMode('ask'); setHistory(false); setError(''); };
+  const addProject = () => doAction(async () => { const p = await call<{ id: string } | null>('project:add'); if (p) { selectProject(p.id); setWorkspace(true); setPanelTab('files'); } });
+  const selectConversation = (c: Conversation) => { prepareNavigation(); setProjectId(c.projectId); setSelected(c.id); setHistory(false); setError(''); };
   const send = () => doAction(async () => {
-    if ((!prompt.trim() && !attachments.length && !pickedFiles.length) || sending || running || permissionSaving || pickingFiles) return;
+    if ((!prompt.trim() && !attachments.length && !pickedFiles.length && !contexts.length) || !drafts.readyRef.current || sendingRef.current || running || permissionSaving || pickingFiles) return;
+    if (missingFiles.length) throw new Error('Select the saved attachment files again, or remove them before sending.');
     if (!provider) { setSettingsPage('setup'); throw new Error('Add a model provider to start a conversation.'); }
     if (!chosenModel) { setSettingsPage('providers'); throw new Error('Choose a model in provider settings first.'); }
     if (attachments.length && !canAttachImages) throw new Error('This model does not accept images. Remove the attachments or choose an image-capable API model.');
-    setSending(true);
-    const content = prompt.trim() || (pickedFiles.length ? 'Please read the attached files.' : attachments.length ? 'Please inspect the attached image.' : '');
-    const images = [...attachments];
-    const attachedContexts = [...contexts];
-    const selectedFiles = [...pickedFiles];
+    setSending(true); sendingRef.current = true;
+    const originalDraft = drafts.snapshot(), originKey = drafts.ownerRef.current, originRevision = draftRevision.current;
+    const content = originalDraft.prompt.trim() || (originalDraft.files.length || originalDraft.contexts.length ? 'Please read the attached files.' : originalDraft.images.length ? 'Please inspect the attached image.' : '');
+    let submittedKey = originKey;
     try {
       let conversation = active;
       if (!conversation) {
         conversation = await call<Conversation>('conversation:create', { projectId, providerId: provider.id, model: chosenModel, mode: chosenMode, permissionMode: chosenPermission, confirmFullAccess: chosenPermission === 'full', title: content.slice(0, 68) });
-        createdForSend.current = conversation.id;
-        setSelected(conversation.id);
+        submittedKey = `conversation:${conversation.id}`;
+        drafts.handoff(originKey, submittedKey, originalDraft);
+        if (drafts.ownerRef.current === originKey && draftRevision.current === originRevision && selectedRef.current === null) setSelected(conversation.id);
       }
-      await call('conversation:send', { id: conversation.id, content, images, fileIds: selectedFiles.map(file => file.id), contexts: attachedContexts.map(({ projectId, path, startLine, endLine, revision }) => ({ projectId, path, startLine, endLine, revision })) });
-      setPrompt('');
-      setAttachments([]);
-      setPickedFiles([]);
-      setContexts([]);
-      autoScroll.current = true;
+      await call('conversation:send', { id: conversation.id, content, images: originalDraft.images, fileIds: originalDraft.files.map(file => file.id), contexts: originalDraft.contexts.map(({ projectId, path, startLine, endLine, revision }) => ({ projectId, path, startLine, endLine, revision })) });
+      void drafts.clearOwner(submittedKey).catch(() => {});
+      if (drafts.ownerRef.current === submittedKey) { draftRevision.current++; autoScroll.current = true; }
     } catch (error) {
-      setPrompt(content);
-      setAttachments(images);
-      setContexts(attachedContexts);
-      setPickedFiles(selectedFiles);
+      void drafts.stashOwner(submittedKey, originalDraft, true).catch(() => {});
       throw error;
     } finally {
-      setSending(false);
+      setSending(false); sendingRef.current = false;
     }
   });
   const useProvider = async (id: string, name: string) => {
@@ -200,27 +229,49 @@ export default function App() {
   };
   const changeModel = (value: string) => doAction(async () => { const [id, name] = JSON.parse(value) as [string, string]; await useProvider(id, name); });
   const changeMode = (value: AgentMode) => doAction(async () => { if (active) await call('conversation:update', { id: active.id, mode: value }); setMode(value); });
-  const pickFiles = async () => {
-    const destination = draftRevision.current;
+  const pickFiles = async (ocr = false) => {
+    if (!drafts.readyRef.current || sendingRef.current || pickerRequest.current) return;
+    const destination = draftRevision.current, ownerKey = drafts.ownerRef.current;
+    const sameDraft = () => drafts.readyRef.current && draftRevision.current === destination && drafts.ownerRef.current === ownerKey;
     const requestId = crypto.randomUUID(); pickerRequest.current = requestId;
     setPickingFiles(true); setFileReading('Choose files to attach…'); setError('');
     try {
-      const result = await call<{ files: PickedFile[]; images: string[]; rejected: string[] }>('attachments:choose', { requestId, providerId: provider?.id, model: chosenModel });
-      if (draftRevision.current !== destination) return;
-      const next = [...pickedFiles, ...result.files];
-      if (next.length + contexts.length > 4 || next.reduce((sum, file) => sum + file.characters, 0) + contexts.reduce((sum, item) => sum + item.content.length, 0) > 60000) throw new Error('Attach up to four text files or selections, with 60,000 characters total.');
-      if (attachments.length + result.images.length > 8 || [...attachments, ...result.images].reduce((sum, image) => sum + image.length, 0) > 24 * 1024 * 1024) throw new Error('Attach up to eight images, with at most 24 MB total.');
-      setPickedFiles(next); setAttachments(images => [...images, ...result.images]);
+      const result = await call<{ files: ComposerFile[]; images: string[]; rejected: string[] }>('attachments:choose', { requestId, providerId: provider?.id, model: chosenModel, ocr });
+      if (!sameDraft()) return;
+      const latest = drafts.snapshot();
+      const next = [...latest.files, ...result.files];
+      const remainingMissing = latest.missingFiles.filter(file => !result.files.some(selected => selected.name === file.name));
+      if (next.length + remainingMissing.length + latest.contexts.length > 4 || [...next, ...remainingMissing].reduce((sum, file) => sum + file.characters, 0) + latest.contexts.reduce((sum, item) => sum + item.content.length, 0) > 60000) throw new Error('Attach up to four files or selections, with 60,000 characters total.');
+      if (latest.images.length + result.images.length > 8 || [...latest.images, ...result.images].reduce((sum, image) => sum + image.length, 0) > 24 * 1024 * 1024) throw new Error('Attach up to eight images, with at most 24 MB total.');
+      setPickedFiles(next); setMissingFiles(remainingMissing); setAttachments(images => [...images, ...result.images]);
       if (result.rejected.length) setError(result.rejected.join(' '));
       composerRef.current?.focus();
-    } catch (error) { if (draftRevision.current === destination) setError(errorText(error)); }
+    } catch (error) { if (sameDraft()) setError(errorText(error)); }
     finally { if (pickerRequest.current === requestId) { pickerRequest.current = undefined; setPickingFiles(false); setFileReading(''); } }
   };
   const attachContext = (context: WorkspaceContext) => {
-    const next = [...contexts.filter(item => !(item.projectId === context.projectId && item.path === context.path && item.startLine === context.startLine && item.endLine === context.endLine)), context];
-    if (next.length + pickedFiles.length > 4 || next.reduce((sum, item) => sum + item.content.length, 0) + pickedFiles.reduce((sum, item) => sum + item.characters, 0) > 60000) { setError('Attach up to four files or selections, with 60,000 characters in total. Remove a context or select fewer lines.'); return; }
+    if (!drafts.readyRef.current || sendingRef.current || context.projectId !== projectRef.current) return;
+    const latest = drafts.snapshot();
+    const next = [...latest.contexts.filter(item => !(item.projectId === context.projectId && item.path === context.path && item.startLine === context.startLine && item.endLine === context.endLine)), context];
+    const files = [...latest.files, ...latest.missingFiles];
+    if (next.length + files.length > 4 || next.reduce((sum, item) => sum + item.content.length, 0) + files.reduce((sum, item) => sum + item.characters, 0) > 60000) { setError('Attach up to four files or selections, with 60,000 characters in total. Remove a context or select fewer lines.'); return; }
     setContexts(next); setError(''); composerRef.current?.focus();
   };
+  const previewFile = async (file: ComposerFile) => {
+    const generation = ++previewGeneration.current, ownerKey = drafts.ownerRef.current;
+    setPreviewLoading(true); setAttachmentPreview(undefined); setError('');
+    try {
+      const preview = await invoke<AttachmentPreview>('attachments:preview', { id: file.id });
+      if (previewGeneration.current === generation && drafts.ownerRef.current === ownerKey) setAttachmentPreview(preview);
+    } catch (error) { if (previewGeneration.current === generation && drafts.ownerRef.current === ownerKey) setError(errorText(error)); }
+    finally { if (previewGeneration.current === generation) setPreviewLoading(false); }
+  };
+  useEffect(() => {
+    if (!attachmentPreview) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setAttachmentPreview(undefined); } };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [attachmentPreview]);
   const changePermission = async (value: PermissionMode, confirmFullAccess = false) => {
     if (running || sending || permissionSaving) return;
     const targetId = active?.id;
@@ -238,41 +289,47 @@ export default function App() {
   return <div className="app-shell">
     <div className="titlebar"><div className="titlebar-brand"><BrandMark /><span>Gravity</span></div><div className="titlebar-center">Desktop agent</div><div className="window-controls"><button title="Minimize" aria-label="Minimize window" onClick={() => doAction(async () => { await call('window:action', { action: 'minimize' }); })}><Minus size={14} /></button><button title="Maximize" aria-label="Maximize window" onClick={() => doAction(async () => { await call('window:action', { action: 'maximize' }); })}><Maximize2 size={12} /></button><button className="window-close" title="Close" aria-label="Close window" onClick={() => doAction(async () => { await call('window:action', { action: 'close' }); })}><X size={16} /></button></div></div>
     <div className="app-body">{sidebar && <aside className="sidebar"><div className="sidebar-heading"><span>Workspace</span><button className="icon-btn" title="Hide sidebar · Ctrl+B" onClick={() => setSidebar(false)}><PanelLeftClose size={16} /></button></div><button className={`new-conversation ${!selected && !history ? 'selected' : ''}`} onClick={newConversation}><Plus size={19} /><span>New conversation</span><kbd>Ctrl N</kbd></button><button className={`sidebar-nav ${history ? 'selected' : ''}`} onClick={() => setHistory(true)}><History size={17} /><span>Search chats</span><kbd>Ctrl K</kbd></button>
-      <div className="sidebar-section-heading"><span>Projects</span><button className="icon-btn" title="Add project folder" onClick={addProject}><Plus size={15} /></button></div><div className="project-list">{state.projects.length ? state.projects.map(p => <div className="project-group" key={p.id}><button className={`project-button ${project?.id === p.id ? 'active' : ''}`} onClick={() => { setProjectId(p.id); setSelected(null); setPermissionMode('ask'); setHistory(false); }} title={p.path}><FolderOpen size={16} /><span>{p.name}</span><ChevronDown size={13} /></button>{visibleConversations.filter(c => c.projectId === p.id).slice(0, 4).map(c => <button className={`conversation-link ${selected === c.id ? 'active' : ''}`} key={c.id} onClick={() => selectConversation(c)} title={c.title}>{c.status === 'running' ? <span className="status-dot running" /> : <span className="conversation-branch" />}<span>{c.title}</span>{c.status === 'error' && <span className="error-dot" />}</button>)}</div>) : <button className="empty-project" onClick={addProject}><FolderOpen size={17} /><span>Open project</span></button>}</div>
+      <div className="sidebar-section-heading"><span>Projects</span><button className="icon-btn" title="Add project folder" onClick={addProject}><Plus size={15} /></button></div><div className="project-list">{state.projects.length ? state.projects.map(p => <div className="project-group" key={p.id}><button className={`project-button ${project?.id === p.id ? 'active' : ''}`} onClick={() => selectProject(p.id)} title={p.path}><FolderOpen size={16} /><span>{p.name}</span><ChevronDown size={13} /></button>{visibleConversations.filter(c => c.projectId === p.id).slice(0, 4).map(c => <button className={`conversation-link ${selected === c.id ? 'active' : ''}`} key={c.id} onClick={() => selectConversation(c)} title={c.title}>{c.status === 'running' ? <span className="status-dot running" /> : <span className="conversation-branch" />}<span>{c.title}</span>{c.status === 'error' && <span className="error-dot" />}</button>)}</div>) : <button className="empty-project" onClick={addProject}><FolderOpen size={17} /><span>Open project</span></button>}</div>
       {visibleConversations.some(c => !c.projectId) && <><div className="sidebar-section-heading"><span>Recent conversations</span></div>{visibleConversations.filter(c => !c.projectId).slice(0, 7).map(c => <button className={`conversation-link standalone ${selected === c.id ? 'active' : ''}`} key={c.id} onClick={() => selectConversation(c)}>{c.status === 'running' ? <span className="status-dot running" /> : <MessageSquare size={14} />}<span>{c.title}</span></button>)}</>}
-      <div className="sidebar-bottom">{runningCount > 0 && <div className="running-agents"><span className="status-dot running" /><span>{runningCount} agent{runningCount === 1 ? '' : 's'} working</span></div>}<button className="gateway-sidebar" onClick={() => setSettingsPage('setup')}><Cpu size={16} /><span>Connections</span></button><button className="sidebar-nav" onClick={() => setSettingsPage('setup')}><Settings2 size={17} /><span>Settings</span><kbd>Ctrl ,</kbd></button></div>
+      <div className="sidebar-bottom">{runningCount > 0 && <div className="running-agents"><span className="status-dot running" /><span>{runningCount} agent{runningCount === 1 ? '' : 's'} working</span></div>}<button className="gateway-sidebar" onClick={() => setSettingsPage('setup')}><Cpu size={16} /><span>Connections</span></button><button className="sidebar-nav" onClick={() => setSettingsPage('general')}><Settings2 size={17} /><span>Settings</span><kbd>Ctrl ,</kbd></button></div>
     </aside>}
     <main className="main-area"><header className="conversation-header"><div className="header-path">{!sidebar && <button className="icon-btn" onClick={() => setSidebar(true)} title="Show sidebar"><PanelLeftOpen size={17} /></button>}<FolderOpen size={15} /><span>{project?.name || 'Personal workspace'}</span><ChevronRight size={14} /><strong>{history ? 'Conversations' : active?.title || 'New conversation'}</strong>{active && <button className="icon-btn rename-button" title="Rename conversation" onClick={() => renameConversation(active)}><Pencil size={13} /></button>}</div><div className="header-actions">{running && <span className="working-badge"><span className="status-dot running" />Working</span>}<button className={`icon-btn ${workspace && panelTab === 'terminal' ? 'active' : ''}`} title="Open terminal" onClick={() => { setWorkspace(true); setPanelTab('terminal'); }}><Terminal size={17} /></button><button className={`icon-btn ${workspace ? 'active' : ''}`} title="Toggle workspace panel" onClick={() => setWorkspace(w => !w)}><PanelRight size={17} /></button></div></header>
       {!window.desktop && <div className="preview-banner"><MonitorIcon /><span>Interface preview · Open the desktop application to connect providers and work with local files.</span></div>}
       {history ? <section className="history-page"><div className="history-heading"><h1>Conversations</h1><button className="secondary-btn" onClick={newConversation}><Plus size={15} />New conversation</button></div><div className="history-filter"><div className="search-field"><Search size={16} /><input autoFocus placeholder="Search conversations or projects" value={historyQuery} onChange={e => setHistoryQuery(e.target.value)} /></div><button className={`secondary-btn ${showArchived ? 'selected' : ''}`} onClick={() => setShowArchived(!showArchived)}><Archive size={15} />{showArchived ? 'Archived' : 'Active'}</button></div><div className="history-list">{historyConversations.length ? historyConversations.map(c => <div className="history-row" key={c.id}><button onClick={() => selectConversation(c)}><div className="history-icon">{c.status === 'running' ? <Loader2 className="spin" size={19} /> : <MessageSquare size={19} />}</div><div><strong>{c.title}</strong><span>{state.projects.find(p => p.id === c.projectId)?.name || 'Personal workspace'} · {modelLabel(c.model) || 'No model'}</span></div><time>{relativeTime(c.updatedAt)}</time></button><button className="icon-btn" title="Rename" onClick={() => renameConversation(c)}><Pencil size={14} /></button><button className="icon-btn" disabled={c.status === 'running'} title={showArchived ? 'Restore conversation' : 'Archive conversation'} onClick={() => doAction(async () => { await call('conversation:update', { id: c.id, archived: !c.archived }); })}><Archive size={15} /></button></div>) : <div className="history-empty"><History size={35} /><h3>{historyQuery ? 'No matching conversations' : showArchived ? 'No archived conversations' : 'Your next idea starts here'}</h3><p>{historyQuery ? 'Try a different search.' : 'Conversations will appear here as you work.'}</p></div>}</div></section> : <>
       <div className={`conversation-scroll ${!active?.messages.length ? 'empty' : ''}`} ref={scrollRef} onScroll={() => { const el = scrollRef.current; if (el) { autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; setScrolledUp(!autoScroll.current); } }}>
-        {loading ? <div className="welcome loading"><Loader2 size={25} className="spin" /><p>Opening your workspace…</p></div> : !active?.messages.length ? <section className="welcome"><div className="welcome-brand"><BrandMark /><span>Gravity</span></div><h1>{project ? `Let's work on ${project.name}` : 'Start a conversation'}</h1><p>{project ? 'Understand your code, plan a change, or build a feature.' : 'Ask a question, or open a project to work with your code.'}</p>{!hasConfiguredConnection && <div className="welcome-setup"><button className="primary-btn" data-testid="get-started" onClick={() => setSettingsPage('setup')}>Connect a model<ArrowRight size={16} /></button><span>Sign in once. Gravity prepares your connection.</span></div>}<div className="starter-grid"><button disabled={!!running || sending} onClick={() => { void changeMode('plan'); setPrompt('Explore this codebase and explain its architecture, key files, and how to run it.'); composerRef.current?.focus(); }}><Code2 size={16} /><strong>Explore project</strong><ArrowUpRight size={13} /></button><button disabled={!!running || sending} onClick={() => { void changeMode('build'); setPrompt('Help me plan and build a new feature. Start by reviewing the project and asking what I want to create.'); composerRef.current?.focus(); }}><WandSparkles size={16} /><strong>Build a feature</strong><ArrowUpRight size={13} /></button><button disabled={!!running || sending} onClick={() => { void changeMode('plan'); setPrompt('Review this project for bugs and suggest focused improvements. Explain your findings before making changes.'); composerRef.current?.focus(); }}><GitBranch size={16} /><strong>Review code</strong><ArrowUpRight size={13} /></button></div>
+        {loading ? <div className="welcome loading"><Loader2 size={25} className="spin" /><p>Opening your workspace…</p></div> : !active?.messages.length ? <section className="welcome"><div className="welcome-brand"><BrandMark /><span>Gravity</span></div><h1>{project ? `Let's work on ${project.name}` : 'Start a conversation'}</h1><p>{project ? 'Understand your code, plan a change, or build a feature.' : 'Ask a question, or open a project to work with your code.'}</p>{!hasConfiguredConnection && <div className="welcome-setup"><button className="primary-btn" data-testid="get-started" onClick={() => setSettingsPage('setup')}>Connect a model<ArrowRight size={16} /></button><span>Sign in once. Gravity prepares your connection.</span></div>}<div className="starter-grid"><button disabled={!!running || sending || !drafts.ready} onClick={() => { void changeMode('plan'); setPrompt('Explore this codebase and explain its architecture, key files, and how to run it.'); composerRef.current?.focus(); }}><Code2 size={16} /><strong>Explore project</strong><ArrowUpRight size={13} /></button><button disabled={!!running || sending || !drafts.ready} onClick={() => { void changeMode('build'); setPrompt('Help me plan and build a new feature. Start by reviewing the project and asking what I want to create.'); composerRef.current?.focus(); }}><WandSparkles size={16} /><strong>Build a feature</strong><ArrowUpRight size={13} /></button><button disabled={!!running || sending || !drafts.ready} onClick={() => { void changeMode('plan'); setPrompt('Review this project for bugs and suggest focused improvements. Explain your findings before making changes.'); composerRef.current?.focus(); }}><GitBranch size={16} /><strong>Review code</strong><ArrowUpRight size={13} /></button></div>
       </section> : <div className="message-list">{active.messages.map(message => <MessageView key={message.id} message={message} providerName={provider?.name || 'Agent'} call={call} onError={setError} openArtifact={openArtifact} onReviewFile={reviewFile} />)}{running && (!active.messages.length || active.messages[active.messages.length - 1]?.role !== 'assistant' || !active.messages[active.messages.length - 1]?.content) && <div className="thinking"><BrandMark /><span>Working on it</span><span className="thinking-dots"><i /><i /><i /></span></div>}<div ref={messageEnd} /></div>}
       </div>
       <div className="composer-area"><ChatConnection key={`${provider?.id}:${chosenModel}`} provider={provider} model={chosenModel} state={state} conversation={active} capabilities={chosenCapabilities} disabled={!!running || sending} call={call} onSettings={() => setSettingsPage('providers')} onBrowserSetup={() => setSettingsPage('browser')} onWebsiteSetup={() => setSettingsPage('setup')} onUseProvider={useProvider} /><RequestStatus conversation={active} />{scrolledUp && <button className="jump-latest" onClick={() => { autoScroll.current = true; messageEnd.current?.scrollIntoView({ behavior: 'smooth' }); }}><ArrowDown size={14} />Latest</button>}{error && <div className="composer-error" role="alert"><span>{error}</span><button className="icon-btn" onClick={() => setError('')} aria-label="Dismiss error"><X size={14} /></button></div>}<form className={`composer ${running ? 'is-working' : ''}`} onSubmit={e => { e.preventDefault(); void send(); }} onPaste={handlePaste} onDragOver={handleDragOver} onDrop={handleDrop}>
   {pickingFiles && <div className="composer-reading" role="status" data-testid="file-reading"><Loader2 size={14} className="spin" /><span>{fileReading}</span><button type="button" className="text-btn" data-testid="cancel-file-reading" onClick={() => { const requestId = pickerRequest.current; if (requestId) void invoke('attachments:cancel', { requestId }).catch(e => setError(errorText(e))); }}>Cancel</button></div>}
-  {pickedFiles.length > 0 && <div className="composer-contexts" data-testid="picked-files">{pickedFiles.map(file => <div className="composer-context-chip" key={file.id}><FileCode2 size={14} /><span>{file.name}<small>{fileDescription(file)}</small></span><button type="button" className="icon-btn" aria-label={`Remove ${file.name} attachment`} onClick={() => setPickedFiles(files => files.filter(item => item.id !== file.id))}><X size={12} /></button></div>)}</div>}
-  {contexts.length > 0 && <div className="composer-contexts" data-testid="composer-contexts">{contexts.map((context, index) => <div className="composer-context-chip" key={`${context.projectId}:${context.path}:${context.startLine}:${context.endLine}`} title={`${context.path} · Saved lines ${context.startLine}–${context.endLine}`}><FileCode2 size={13} /><span>{context.label}<small>Lines {context.startLine}–{context.endLine} · saved file</small></span><button type="button" className="icon-btn" aria-label={`Remove ${context.label} context`} onClick={() => setContexts(items => items.filter((_, i) => i !== index))}><X size={12} /></button></div>)}</div>}
+  {!drafts.ready && <div className="draft-loading-note" role="status">Restoring your draft…</div>}
+  {drafts.issue && <div className="draft-warning" role="alert" data-testid="draft-warning">Your draft is kept in this session. {drafts.issue}</div>}
+  {previewLoading && <div className="draft-loading-note" role="status"><Loader2 size={12} className="spin" /> Opening attachment preview…</div>}
+  {pickedFiles.length > 0 && <div className="composer-contexts" data-testid="picked-files">{pickedFiles.map(file => <div className="composer-context-chip" key={file.id}><FileCode2 size={14} /><button type="button" className="file-preview-trigger" aria-label={`Preview ${file.name}`} title="Preview attached file" onClick={() => void previewFile(file)}>{file.name}<small>{fileDescription(file)}</small></button><button type="button" className="icon-btn" disabled={sending} aria-label={`Remove ${file.name} attachment`} onClick={() => setPickedFiles(files => files.filter(item => item.id !== file.id))}><X size={12} /></button></div>)}</div>}
+  {missingFiles.length > 0 && <div className="composer-contexts" data-testid="missing-files">{missingFiles.map((file, index) => <div className="composer-context-chip draft-file-missing" key={`${file.name}:${index}`}><FileCode2 size={14} /><button type="button" className="file-preview-trigger" disabled={!drafts.ready || pickingFiles || sending} onClick={() => void pickFiles(file.ocr === true)} aria-label={`Reselect ${file.name}`}>{file.name}<small>Reselect file · saved draft attachment</small></button><button type="button" className="icon-btn" disabled={sending} aria-label={`Remove saved ${file.name} attachment`} onClick={() => setMissingFiles(files => files.filter((_, i) => i !== index))}><X size={12} /></button></div>)}</div>}
+  {contexts.length > 0 && <div className="composer-contexts" data-testid="composer-contexts">{contexts.map((context, index) => <div className="composer-context-chip" key={`${context.projectId}:${context.path}:${context.startLine}:${context.endLine}`} title={`${context.path} · Saved lines ${context.startLine}–${context.endLine}`}><FileCode2 size={13} /><span>{context.label}<small>Lines {context.startLine}–{context.endLine} · saved file</small></span><button type="button" className="icon-btn" disabled={sending} aria-label={`Remove ${context.label} context`} onClick={() => setContexts(items => items.filter((_, i) => i !== index))}><X size={12} /></button></div>)}</div>}
   {attachments.length > 0 && (
     <div className="composer-attachments">
       {attachments.map((img, index) => (
         <div key={index} className="attachment-chip">
           <img src={img} alt="Pasted attachment" className="attachment-thumb" />
-          <button type="button" className="attachment-remove" onClick={() => setAttachments(prev => prev.filter((_, i) => i !== index))} title="Remove attachment" aria-label="Remove attachment"><X size={11} /></button>
+          <button type="button" className="attachment-remove" disabled={sending} onClick={() => setAttachments(prev => prev.filter((_, i) => i !== index))} title="Remove attachment" aria-label="Remove attachment"><X size={11} /></button>
         </div>
       ))}
     </div>
   )}
-  <textarea ref={composerRef} aria-label="Message your agent" placeholder={running ? 'Your request is running…' : attachments.length ? 'Add a message or press Enter to send image…' : chosenMode === 'chat' ? 'Ask a question or talk through an idea…' : 'Describe what you want to plan or build…'} value={prompt} onChange={e => { setPrompt(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!running) void send(); } }} onPaste={handlePaste} disabled={sending} rows={2} />
+  <textarea ref={composerRef} aria-label="Message your agent" placeholder={running ? 'Your request is running…' : attachments.length ? 'Add a message or press Enter to send image…' : chosenMode === 'chat' ? 'Ask a question or talk through an idea…' : 'Describe what you want to plan or build…'} value={prompt} maxLength={60000} onChange={e => { setPrompt(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`; }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!running) void send(); } }} onPaste={handlePaste} disabled={sending || !drafts.ready} rows={2} />
   <div className="composer-controls">
     <div className="composer-options">
-      <button type="button" className="icon-btn add-context" data-testid="attach-files" disabled={pickingFiles || sending} onClick={() => void pickFiles()} aria-label="Attach files" title="Attach text, code, PDF, Office or images">{pickingFiles ? <Loader2 size={17} className="spin" /> : <Plus size={19} />}</button>
-      <label className={`icon-btn attachment-btn ${canAttachImages ? '' : 'unavailable'}`} title={canAttachImages ? 'Attach image (or paste with Ctrl+V)' : 'This connection does not accept images'}><ImageIcon size={17} /><input type="file" accept="image/*" multiple disabled={!canAttachImages || sending} style={{ display: 'none' }} onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} /></label>
-      <div className="model-selector"><Cpu size={14} /><select aria-label="Model" value={provider ? JSON.stringify([provider.id, chosenModel]) : ''} onChange={e => changeModel(e.target.value)} disabled={running || sending || !state.providers.length}>{!provider && <option value="">Connect a model</option>}{state.providers.map(p => <optgroup label={p.name} key={p.id}>{[...new Set([...p.models, p.defaultModel, ...(p.id === provider?.id ? [chosenModel] : [])])].filter(Boolean).map(m => <option value={JSON.stringify([p.id, m])} key={m}>{modelLabel(m)}</option>)}</optgroup>)}</select><ChevronDown size={12} /></div><span className="composer-divider" /><div className="mode-selector"><select aria-label="Agent mode" value={chosenMode} onChange={e => changeMode(e.target.value as AgentMode)} disabled={running || sending}><option value="chat">Chat</option><option value="plan">Plan</option><option value="build">Build</option></select><ChevronDown size={12} /></div></div><div className="send-controls">{!provider && <button className="text-btn" type="button" onClick={() => setSettingsPage('setup')}>Set up<ArrowRight size={13} /></button>}{running ? <button type="button" className="send-btn stop-btn" aria-label="Stop agent" title="Stop agent" onClick={() => doAction(async () => { if (active) await call('conversation:stop', { id: active.id }); })}><Square size={15} fill="currentColor" /></button> : <button className="send-btn" aria-label="Send message" title="Send · Enter" disabled={(!prompt.trim() && !attachments.length && !pickedFiles.length) || sending || permissionSaving || pickingFiles}>{sending ? <Loader2 size={17} className="spin" /> : <ArrowUp size={19} />}</button>}</div></div></form><div className="composer-permissions">{chosenMode === 'chat' ? <span className="permission-context" data-testid="chat-mode-note">Replies only · Choose Build to edit project files.</span> : <><PermissionsMenu key={selected || ('draft-' + (projectId || 'personal'))} value={chosenPermission} disabled={!!running || sending || permissionSaving} planning={chosenMode === 'plan'} onChange={changePermission} /><span className="permission-context">{chosenMode === 'plan' ? 'Plan mode: inspection only' : 'Applies to this conversation'}</span></>}<span className="composer-keyboard-hint">Enter to send · Shift Enter for a new line</span></div></div>
+      <button type="button" className="icon-btn add-context" data-testid="attach-files" disabled={pickingFiles || sending || !drafts.ready} onClick={() => void pickFiles()} aria-label="Attach files" title="Attach any file · preview what the model can read">{pickingFiles ? <Loader2 size={17} className="spin" /> : <Plus size={19} />}</button>
+      <button type="button" className="scan-pdf-action" data-testid="scan-pdf" disabled={pickingFiles || sending || !drafts.ready} onClick={() => void pickFiles(true)} title="Read text from scanned PDFs with Windows OCR · up to 10 pages">Scan PDF</button>
+      <label className={`icon-btn attachment-btn ${canAttachImages ? '' : 'unavailable'}`} title={canAttachImages ? 'Attach image (or paste with Ctrl+V)' : 'This connection does not accept images'}><ImageIcon size={17} /><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple disabled={!canAttachImages || sending || !drafts.ready} style={{ display: 'none' }} onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} /></label>
+      <div className="model-selector"><Cpu size={14} /><select aria-label="Model" value={provider ? JSON.stringify([provider.id, chosenModel]) : ''} onChange={e => changeModel(e.target.value)} disabled={running || sending || !state.providers.length}>{!provider && <option value="">Connect a model</option>}{state.providers.map(p => <optgroup label={p.name} key={p.id}>{[...new Set([...p.models, p.defaultModel, ...(p.id === provider?.id ? [chosenModel] : [])])].filter(Boolean).map(m => <option value={JSON.stringify([p.id, m])} key={m}>{modelLabel(m)}</option>)}</optgroup>)}</select><ChevronDown size={12} /></div><span className="composer-divider" /><div className="mode-selector"><select aria-label="Agent mode" value={chosenMode} onChange={e => changeMode(e.target.value as AgentMode)} disabled={running || sending}><option value="chat">Chat</option><option value="plan">Plan</option><option value="build">Build</option></select><ChevronDown size={12} /></div></div><div className="send-controls">{!provider && <button className="text-btn" type="button" onClick={() => setSettingsPage('setup')}>Set up<ArrowRight size={13} /></button>}{running ? <button type="button" className="send-btn stop-btn" aria-label="Stop agent" title="Stop agent" onClick={() => doAction(async () => { if (active) await call('conversation:stop', { id: active.id }); })}><Square size={15} fill="currentColor" /></button> : <button className="send-btn" aria-label="Send message" title="Send · Enter" disabled={(!prompt.trim() && !attachments.length && !pickedFiles.length && !contexts.length) || sending || permissionSaving || pickingFiles || !drafts.ready || !!missingFiles.length}>{sending ? <Loader2 size={17} className="spin" /> : <ArrowUp size={19} />}</button>}</div></div></form><div className="composer-permissions">{chosenMode === 'chat' ? <span className="permission-context" data-testid="chat-mode-note">Replies only · Choose Build to edit project files.</span> : <><PermissionsMenu key={selected || ('draft-' + (projectId || 'personal'))} value={chosenPermission} disabled={!!running || sending || permissionSaving} planning={chosenMode === 'plan'} onChange={changePermission} /><span className="permission-context">{chosenMode === 'plan' ? 'Plan mode: inspection only' : 'Applies to this conversation'}</span></>}<span className="composer-keyboard-hint">Enter to send · Shift Enter for a new line</span></div></div>
       </>}
     </main><div className="workspace-container" hidden={!workspace}><Workspace state={state} project={project} call={call} onClose={() => setWorkspace(false)} tab={panelTab} setTab={setPanelTab} artifact={artifact} setArtifact={setArtifact} onAttachContext={attachContext} onOpenProject={addProject} reviewPath={reviewProjectId === project?.id ? reviewPath : undefined} reviewRequestId={reviewRequestId} /></div></div>
     <footer className="statusbar"><span><span className="status-dot online" />{runningCount ? `${runningCount} agent${runningCount === 1 ? '' : 's'} running` : 'Ready'}{project && <><span className="status-separator">/</span><FolderOpen size={11} />{project.name}</>}</span><span><button onClick={() => setSettingsPage('gateway')}>{state.gateway.running ? <Radio size={11} /> : <Cpu size={11} />}{state.gateway.running ? `API :${state.gateway.port}` : 'Local desktop'}</button></span></footer>
     {settingsPage && <Settings state={state} call={call} initialPage={settingsPage} activeProviderId={provider?.id} activeModel={chosenModel} modelSelectionDisabled={!!running || sending} onUseProvider={async (id, name) => { await useProvider(id, name); setSettingsPage(null); }} onClose={() => setSettingsPage(null)} />}
+    {attachmentPreview && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setAttachmentPreview(undefined); }}><section className="attachment-preview-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-preview-title" data-testid="attachment-preview"><div className="attachment-preview-heading"><FileCode2 size={20} /><div><h3 id="attachment-preview-title">{attachmentPreview.name}</h3><p>{fileDescription(attachmentPreview)} · {attachmentPreview.characters.toLocaleString()} characters</p></div><button type="button" autoFocus className="icon-btn" onClick={() => setAttachmentPreview(undefined)} aria-label="Close attachment preview"><X size={18} /></button></div>{attachmentPreview.ocr && <p className="attachment-preview-note warning">Text recognized with OCR ({attachmentPreview.ocrLanguage}). Check names, numbers and tables before sending; scanned text can contain errors.</p>}{(attachmentPreview.previewKind === 'binary' || attachmentPreview.format === 'binary') && <p className="attachment-preview-note">The model receives file metadata and a short binary preview. The file’s full contents have not been decoded. Use Scan PDF for scanned documents.</p>}<pre data-testid="attachment-preview-content">{attachmentPreview.content}</pre><p className="attachment-preview-note">This is the literal attachment text the model will receive. Instructions inside files are file content; your message tells the agent what to do with them.</p></section></div>}
     {rename && <div className="modal-backdrop"><form className="small-modal" role="dialog" aria-label="Rename conversation" onSubmit={e => { e.preventDefault(); void saveName(); }}><div className="small-modal-heading"><h3>Rename conversation</h3><button type="button" className="icon-btn" onClick={() => setRename(null)} aria-label="Close"><X size={17} /></button></div><input autoFocus aria-label="Conversation title" value={renamedTitle} onChange={e => setRenamedTitle(e.target.value)} /><div className="settings-actions"><button className="secondary-btn" type="button" onClick={() => setRename(null)}>Cancel</button><button className="primary-btn" disabled={!renamedTitle.trim()}>Save name</button></div></form></div>}
   </div>;
 }
@@ -328,7 +385,8 @@ function MessageView({ message, providerName, call, onError, openArtifact, onRev
       </div>
     </article>
   );
-  return <article className="message assistant-message"><div className="assistant-label"><BrandMark /><strong>{message.content.startsWith('Request failed:') ? 'Request failed' : providerName}</strong></div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href) call('shell:openExternal', { url: href }).catch(e => onError(errorText(e))); }}>{children}</a> }}>{message.content || ' '}</ReactMarkdown></div><div className="message-actions"><button className="icon-btn" title={copied ? 'Copied' : 'Copy response'} onClick={copy}>{copied ? <Check size={13} /> : <Copy size={13} />}</button></div></article>;
+  const failed = message.requestFailure === true || message.content.startsWith('Request failed:') || /^(?:The (?:selected )?provider returned an empty response\.)$/i.test(message.content.trim());
+  return <article className={`message assistant-message${failed ? ' failed-message' : ''}`}><div className="assistant-label"><BrandMark /><strong>{failed ? 'Request failed' : providerName}</strong></div>{failed ? <div className="request-failure-text">{message.content}</div> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href) call('shell:openExternal', { url: href }).catch(e => onError(errorText(e))); }}>{children}</a> }}>{message.content || ' '}</ReactMarkdown></div>}<div className="message-actions"><button className="icon-btn" title={copied ? 'Copied' : 'Copy response'} onClick={copy}>{copied ? <Check size={13} /> : <Copy size={13} />}</button></div></article>;
 }
 function BrandMark() { return <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>; }
 function MonitorIcon() { return <Code2 size={14} />; }

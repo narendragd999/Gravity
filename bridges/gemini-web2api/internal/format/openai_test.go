@@ -1,6 +1,8 @@
 package format
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,7 +11,10 @@ import (
 
 func TestParseToolCalls(t *testing.T) {
 	input := "Here is a call:\n```tool_call\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Jakarta\"}}\n```\nDone."
-	clean, calls := ParseToolCalls(input)
+	clean, calls, err := ParseToolCalls(input)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if len(calls) != 1 {
 		t.Fatalf("Expected 1 tool call, got %d", len(calls))
@@ -21,6 +26,44 @@ func TestParseToolCalls(t *testing.T) {
 
 	if !strings.Contains(clean, "Here is a call:") || !strings.Contains(clean, "Done.") {
 		t.Errorf("Unexpected clean text: %q", clean)
+	}
+}
+
+func TestParseToolCallsRejectsMalformedBatch(t *testing.T) {
+	valid := "```tool_call\n{\"name\":\"read_file\",\"arguments\":{}}\n```\n"
+	for _, invalid := range []string{
+		"```tool_call\nnot-json\n```",
+		"```tool_call\n{\"arguments\":{}}\n```",
+		"```tool_call\n{\"name\":\"  \",\"arguments\":{}}\n```",
+		"```tool_call\n{\"name\":\"run_command\",\"arguments\":\"not-json\"}\n```",
+		"```tool_call\n{\"name\":\"run_command\",\"arguments\":[]}\n```",
+		"```tool_call\n{\"name\":\"run_command\",\"arguments\":{}}",
+	} {
+		input := valid + invalid
+		clean, calls, err := ParseToolCalls(input)
+		if !errors.Is(err, ErrInvalidToolCall) || len(calls) != 0 || clean != input {
+			t.Fatalf("malformed batch partially accepted: clean=%q, calls=%v, error=%v", clean, calls, err)
+		}
+	}
+}
+
+func TestParseToolCallsAcceptsToolOnlyAndEncodedObject(t *testing.T) {
+	input := "```tool_call\n{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"note.txt\\\"}\"}\n```"
+	clean, calls, err := ParseToolCalls(input)
+	if err != nil || clean != "" || len(calls) != 1 {
+		t.Fatalf("tool-only call rejected: clean=%q, calls=%v, error=%v", clean, calls, err)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil || args["path"] != "note.txt" {
+		t.Fatalf("arguments changed: %s", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseToolCallsKeepsOrdinaryText(t *testing.T) {
+	input := "A normal answer with a ```json\n{\"value\":1}\n``` example."
+	clean, calls, err := ParseToolCalls(input)
+	if err != nil || clean != input || len(calls) != 0 {
+		t.Fatalf("ordinary text changed: clean=%q, calls=%v, error=%v", clean, calls, err)
 	}
 }
 

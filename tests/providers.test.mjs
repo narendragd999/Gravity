@@ -234,3 +234,114 @@ test('A JSON-only service can still satisfy a streaming caller', async t => {
   assert.equal(chunks[0].object, 'chat.completion.chunk');
   assert.equal(chunks[0].choices[0].delta.content, 'Buffered answer');
 });
+
+test('completed JSON and SSE responses without an answer fail with recovery guidance', async t => {
+  let content;
+  const url = await fixture(t, (req, res) => {
+    if (req.url.startsWith('/stream')) {
+      sse(res);
+      res.write(event(openChunk({ role: 'assistant', content })));
+      res.end(event(openChunk({}, 'stop')) + 'data: [DONE]\n\n');
+    } else json(res, answer(content));
+  });
+  for (content of [null, '', ' \n\t', [{ type: 'text', text: '  ' }]]) {
+    for (const stream of [false, true]) {
+      await assert.rejects(complete({ id: 'gemini-local', baseUrl: `${url}/${stream ? 'stream' : 'json'}` }, { ...body, stream }), error => {
+        assert.equal(error.code, 'empty_response');
+        assert.match(error.message, /Gemini Web2API returned no answer/);
+        assert.match(error.message, /normal Chrome/);
+        return true;
+      });
+    }
+  }
+});
+
+test('reasoning without a final answer and explicit refusal are not successful responses', async t => {
+  const url = await fixture(t, (req, res) => {
+    const result = answer(null);
+    if (req.url.startsWith('/reasoning')) result.choices[0].message.reasoning_content = 'I am thinking about it.';
+    else result.choices[0].message.refusal = 'Declined.';
+    json(res, result);
+  });
+  await assert.rejects(complete({ baseUrl: `${url}/reasoning` }, body), error => error.code === 'reasoning_only_response');
+  await assert.rejects(complete({ baseUrl: `${url}/refusal` }, body), error => error.code === 'blocked_response');
+});
+
+test('streamed text parts stay text and valid tool-only turns still succeed', async t => {
+  const url = await fixture(t, (req, res) => {
+    sse(res);
+    const delta = req.url.startsWith('/tool')
+      ? { tool_calls: [{ index: 0, id: 'read', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } }] }
+      : { content: [{ type: 'text', text: 'A usable answer.' }] };
+    res.write(event(openChunk(delta)));
+    res.end(event(openChunk({}, req.url.startsWith('/tool') ? 'tool_calls' : 'stop')) + 'data: [DONE]\n\n');
+  });
+  const deltas = [];
+  const text = await complete({ baseUrl: `${url}/text` }, body, { onDelta: text => deltas.push(text) });
+  assert.equal(text.choices[0].message.content, 'A usable answer.');
+  assert.deepEqual(deltas, ['A usable answer.']);
+  const tools = await complete({ baseUrl: `${url}/tool` }, { ...body, stream: true });
+  assert.equal(tools.choices[0].message.content, null);
+  assert.equal(tools.choices[0].message.tool_calls[0].function.arguments, '{"path":"note.txt"}');
+});
+
+test('malformed tool batches fail before any action is accepted', async t => {
+  let argumentsText;
+  const url = await fixture(t, (_, res) => {
+    const result = answer(null);
+    result.choices[0].message.tool_calls = [{ id: 'valid', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+      { id: 'invalid', type: 'function', function: { name: 'propose_file', arguments: argumentsText } }];
+    json(res, result);
+  });
+  for (argumentsText of ['not-json', '[]', 'null', '"text"']) await assert.rejects(complete({ baseUrl: url }, body), error => error.code === 'invalid_tool_call');
+});
+
+test('native Gemini blocks safety and malformed-function results even when a tool payload exists', async t => {
+  let finishReason, streaming;
+  const url = await fixture(t, (_, res) => {
+    const data = { candidates: [{ content: { parts: [{ functionCall: { name: 'propose_file', args: { path: 'a.txt', content: 'blocked' } } }] }, finishReason }] };
+    if (streaming) { sse(res); res.end(event(data)); } else json(res, data);
+  });
+  for (streaming of [false, true]) for (finishReason of ['SAFETY', 'PROHIBITED_CONTENT', 'MALFORMED_FUNCTION_CALL']) {
+    await assert.rejects(complete({ type: 'gemini', baseUrl: url }, { ...body, stream: streaming }), error => error.code === (finishReason === 'MALFORMED_FUNCTION_CALL' ? 'invalid_tool_call' : 'blocked_response'));
+  }
+});
+
+test('explicit bridge model fallback fails while ordinary model version aliases remain valid', async t => {
+  let fallback = false;
+  const url = await fixture(t, (_, res) => {
+    if (fallback) res.setHeader('X-Model-Fallback', 'true');
+    json(res, { ...answer('OK'), model: 'custom-model-version-2026' });
+  });
+  assert.equal((await complete({ baseUrl: url }, body)).model, 'custom-model-version-2026');
+  fallback = true;
+  await assert.rejects(complete({ baseUrl: url }, body), error => error.code === 'model_fallback');
+});
+
+test('native Gemini unavailable model errors give model discovery and Base URL guidance', async t => {
+  const url = await fixture(t, (_, res) => { res.statusCode = 404; json(res, { error: { message: 'models/retired-model is unavailable' } }); });
+  await assert.rejects(complete({ type: 'gemini', baseUrl: url }, body), error => {
+    assert.equal(error.code, 'model_not_found');
+    assert.equal(error.status, 404);
+    assert.match(error.message, /Discover models/);
+    assert.match(error.message, /Base URL/);
+    return true;
+  });
+});
+
+test('direct stream callers never receive a successful finish for empty or malformed action output', async t => {
+  let toolArguments;
+  const url = await fixture(t, (req, res) => {
+    sse(res);
+    const delta = req.url.startsWith('/invalid-tool') ? { tool_calls: [{ id: 'bad', type: 'function', function: { name: 'run_command', arguments: toolArguments } }] } : { role: 'assistant' };
+    res.write(event(openChunk(delta)));
+    res.end(event(openChunk({}, toolArguments ? 'tool_calls' : 'stop')) + 'data: [DONE]\n\n');
+  });
+  for (toolArguments of [undefined, 'not-json']) {
+    const received = [];
+    await assert.rejects(async () => {
+      for await (const value of streamCompletion({ baseUrl: `${url}/${toolArguments ? 'invalid-tool' : 'empty'}` }, body)) received.push(value);
+    }, error => error.code === (toolArguments ? 'invalid_tool_call' : 'empty_response'));
+    assert.ok(!received.some(value => value.choices?.some(choice => choice.finish_reason != null)));
+  }
+});

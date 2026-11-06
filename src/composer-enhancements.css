@@ -1,0 +1,19 @@
+.file-preview-trigger{display:flex;flex-direction:column;gap:3px;min-width:0;text-align:left;padding:0;color:var(--text);font-size:inherit;overflow-wrap:anywhere;overflow:hidden}
+.file-preview-trigger:hover{color:var(--accent)}
+.file-preview-trigger small{color:var(--muted);font-size:calc(10px * var(--ui-scale,1.1))}
+.draft-file-missing{border-style:dashed!important}
+.draft-file-missing small{color:var(--red)}
+.scan-pdf-action{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:calc(10px * var(--ui-scale,1.1));padding:5px 6px;border-radius:5px;white-space:nowrap}
+.scan-pdf-action:hover{background:var(--hover);color:var(--text)}
+.draft-warning{padding:5px 9px;color:var(--red);font-size:calc(11px * var(--ui-scale,1.1));line-height:1.5}
+.draft-loading-note{font-size:calc(11px * var(--ui-scale,1.1));color:var(--muted);padding:5px 9px}
+.attachment-preview-modal{background:var(--bg);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);width:min(840px,calc(100vw - 40px));max-height:calc(100vh - 80px);display:flex;flex-direction:column;overflow:hidden}
+.attachment-preview-heading{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border)}
+.attachment-preview-heading>div{min-width:0;flex:1}.attachment-preview-heading h3{font-size:calc(14px * var(--ui-scale,1.1));overflow-wrap:anywhere}
+.attachment-preview-heading p{font-size:calc(11px * var(--ui-scale,1.1));color:var(--muted);padding-top:5px;line-height:1.5}
+.attachment-preview-modal pre{margin:0;padding:18px 20px;white-space:pre-wrap;overflow-wrap:anywhere;font:calc(12px * var(--ui-scale,1.1))/1.7 var(--mono);overflow:auto;min-height:100px;max-height:65vh;background:var(--subtle)}
+.attachment-preview-note{font-size:calc(11px * var(--ui-scale,1.1));padding:12px 20px;line-height:1.6;color:var(--muted)}
+.attachment-preview-note.warning{color:var(--red)}
+.request-failure-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-size:calc(13px * var(--ui-scale,1.1));color:var(--text)}
+.failed-message .assistant-label strong{color:var(--red)}
+@container(max-width:650px){.scan-pdf-action{font-size:calc(9px * var(--ui-scale,1.1));padding-left:2px;padding-right:2px}.composer .composer-options{flex-wrap:wrap;row-gap:3px}.composer .model-selector{max-width:170px}}

@@ -1,6 +1,6 @@
 {
   "name": "gravity",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "description": "A portable desktop agent workspace with browser connections and a built-in local API.",
   "author": "Gravity contributors",

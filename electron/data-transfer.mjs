@@ -6,8 +6,12 @@ const MAX_BYTES = 32 * 1024 * 1024;
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 const text = (value, limit) => typeof value === 'string' && value.length <= limit;
 const fileDetails = file => ({ ...(file.format ? { format: file.format } : {}),
-  ...(file.pages ? { pages: file.pages } : {}), ...(file.sheets ? { sheets: file.sheets } : {}), ...(file.slides ? { slides: file.slides } : {}) });
-const validFileDetails = file => (file.format === undefined || ['pdf', 'docx', 'xlsx', 'pptx'].includes(file.format))
+  ...(file.pages ? { pages: file.pages } : {}), ...(file.sheets ? { sheets: file.sheets } : {}), ...(file.slides ? { slides: file.slides } : {}),
+  ...(file.ocr ? { ocr: true, ocrLanguage: file.ocrLanguage } : {}), ...(file.previewKind ? { previewKind: file.previewKind } : {}) });
+const validFileDetails = file => (file.format === undefined || ['pdf', 'docx', 'xlsx', 'pptx', 'binary'].includes(file.format))
+  && (file.ocr === undefined || typeof file.ocr === 'boolean' && (!file.ocr || file.format === 'pdf'))
+  && (file.ocrLanguage === undefined || typeof file.ocrLanguage === 'string' && /^[a-zA-Z0-9-]{1,40}$/.test(file.ocrLanguage))
+  && (file.previewKind === undefined || ['text', 'binary'].includes(file.previewKind))
   && ['pages', 'sheets', 'slides'].every(key => file[key] === undefined || Number.isInteger(file[key]) && file[key] > 0 && file[key] <= (key === 'sheets' ? 20 : 50));
 const publicSettings = ['theme', 'uiScale', 'systemPrompt', 'maxSteps'];
 const safeUrl = value => {
@@ -25,6 +29,7 @@ export function exportData(store) {
     providerId: c.providerId, model: c.model, createdAt: c.createdAt, updatedAt: c.updatedAt,
     messages: c.messages.filter(m => !m.transient).map(m => ({ role: m.role, content: m.content,
       createdAt: m.createdAt, ...(m.images?.length ? { images: m.images } : {}),
+      ...(m.requestFailure ? { requestFailure: true } : {}),
       ...(m.files?.length ? { files: m.files.map(file => ({ name: file.name, content: file.content, ...fileDetails(file) })) } : {}),
       ...(m.artifact ? { artifact: { name: m.artifact.name, content: m.artifact.content } } : {}) }))
   }));
@@ -67,10 +72,12 @@ export function importData(store, raw) {
       || !Array.isArray(c.messages) || c.messages.length > 10000) throw new Error('The backup contains an invalid conversation.');
     const messages = c.messages.map(m => {
       if (!plain(m) || !['user', 'assistant', 'tool'].includes(m.role) || !text(m.content, 200000)) throw new Error('The backup contains an invalid message.');
+      if (m.requestFailure !== undefined && typeof m.requestFailure !== 'boolean') throw new Error('The backup contains an invalid failure marker.');
       if (m.images !== undefined && (!Array.isArray(m.images) || m.images.length > 8 || !m.images.every(i => text(i, 12 * 1024 * 1024) && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-zA-Z0-9+/=]+$/.test(i)))) throw new Error('The backup contains an invalid image.');
       if (m.files !== undefined && (!Array.isArray(m.files) || m.files.length > 4 || !m.files.every(file => plain(file) && text(file.name, 255) && text(file.content, 60000) && validFileDetails(file)) || m.files.reduce((sum, file) => sum + file.content.length, 0) > 60000)) throw new Error('The backup contains invalid file attachments.');
       if (m.artifact !== undefined && (!plain(m.artifact) || !text(m.artifact.name, 200) || !text(m.artifact.content, 200000))) throw new Error('The backup contains an invalid artifact.');
       return { id: randomUUID(), role: m.role, content: m.content, createdAt: new Date().toISOString(),
+        ...(m.requestFailure ? { requestFailure: true } : {}),
         ...(m.images ? { images: m.images } : {}), ...(m.files ? { files: m.files.map(file => ({ name: file.name, content: file.content, ...fileDetails(file) })) } : {}), ...(m.artifact ? { artifact: { name: m.artifact.name, content: m.artifact.content } } : {}) };
     });
     const providerId = providerMap.get(c.providerId) || next.providers.find(p => p.id === c.providerId)?.id || next.providers[0]?.id || '';

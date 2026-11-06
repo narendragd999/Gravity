@@ -111,7 +111,7 @@ func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	text, err := a.Gem.Generate(prompt, gemOpt, fileRefs)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": fmt.Sprintf("upstream error: %v", err)}})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": fmt.Sprintf("upstream error: %v", err), "code": upstreamFailureCode(err)}})
 		return
 	}
 
@@ -120,7 +120,11 @@ func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	var toolCalls []models.OpenAIToolCall
 	if len(reqTools) > 0 && text != "" && !isToolNone {
-		text, toolCalls = format.ParseToolCalls(text)
+		text, toolCalls, err = format.ParseToolCalls(text)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": err.Error(), "code": "invalid_tool_call"}})
+			return
+		}
 	}
 
 	rid := fmt.Sprintf("resp_%s", format.RandHex(16))

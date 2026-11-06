@@ -3,13 +3,25 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/ikhsan3adi/gemini-web2api/internal/format"
+	"github.com/ikhsan3adi/gemini-web2api/internal/gemini"
 	"github.com/ikhsan3adi/gemini-web2api/internal/models"
 	"github.com/ikhsan3adi/gemini-web2api/internal/multimodal"
 )
+
+func upstreamFailureCode(err error) string {
+	if errors.Is(err, gemini.ErrEmptyResponse) {
+		return "empty_response"
+	}
+	if errors.Is(err, format.ErrInvalidToolCall) {
+		return "invalid_tool_call"
+	}
+	return "upstream_error"
+}
 
 func setModelHeaders(w http.ResponseWriter, resolved models.Resolved) {
 	w.Header().Set("X-Resolved-Model", resolved.Name)

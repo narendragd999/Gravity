@@ -113,6 +113,8 @@ if (verification?.error) throw verification.error;
 assert.equal(verification?.status, 0, 'Source ZIP verification failed (Python 3 is required)');
 
 const targets = [`Gravity-${version}-x64.exe`, `Gravity-${version}-source.zip`];
+const optionalBridge = `Gravity-Gemini-Web2API-${version}-x64.exe`;
+if (fs.existsSync(path.join(outputDirectory, optionalBridge))) targets.push(optionalBridge);
 const hashes = targets.map(name => {
   const filename = regularFile(`${outputRelative}/${name}`);
   return `${createHash('sha256').update(fs.readFileSync(filename)).digest('hex')}  ${name}`;

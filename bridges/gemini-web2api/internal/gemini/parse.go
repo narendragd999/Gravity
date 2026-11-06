@@ -2,15 +2,17 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
 
 var (
-	reCodeExec    = regexp.MustCompile(`(?s)\x60\x60\x60(?:python|javascript|text)\?code_(?:reference|stdout)&code_event_index=\d+\n.*?\x60\x60\x60\n?`)
-	reCardContent = regexp.MustCompile(`http://googleusercontent\.com/card_content/\d+\n?`)
-	reBardError   = regexp.MustCompile(`BardErrorInfo\s*\[(\d+)\]`)
+	ErrEmptyResponse = errors.New("Gemini returned no answer. Check the selected model, bridge version and Google session before sending again")
+	reCodeExec       = regexp.MustCompile(`(?s)\x60\x60\x60(?:python|javascript|text)\?code_(?:reference|stdout)&code_event_index=\d+\n.*?\x60\x60\x60\n?`)
+	reCardContent    = regexp.MustCompile(`http://googleusercontent\.com/card_content/\d+\n?`)
+	reBardError      = regexp.MustCompile(`BardErrorInfo\s*\[(\d+)\]`)
 )
 
 func CleanText(text string, strip bool) string {
@@ -98,5 +100,9 @@ func ExtractResponseText(raw string) (string, error) {
 		}
 	}
 
-	return CleanText(lastText, true), nil
+	text := CleanText(lastText, true)
+	if text == "" {
+		return "", ErrEmptyResponse
+	}
+	return text, nil
 }

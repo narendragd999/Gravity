@@ -21,6 +21,8 @@ import { writeDataExport, importData } from './data-transfer.mjs';
 import { prepareWebsiteData } from './website-data.mjs';
 import { AttachmentStore } from './attachments.mjs';
 import { DocumentExtractor } from './document-service.mjs';
+import { DraftStore } from './drafts.mjs';
+import { UpdateService } from './update-service.mjs';
 
 app.setName('Gravity');
 if (process.platform === 'win32') app.setAppUserModelId('dev.antigravity.studio');
@@ -29,7 +31,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const entry = path.resolve(here, '../dist/index.html');
 const devUrl = process.env.GRAVITY_DEV_URL || process.env.ANTIGRAVITY_DEV_URL;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Development URL must be the local Vite server.');
-let mainWindow, store, gateway, bridge, bridges, web2apiSetup, browserConnector, runner, quitting = false;
+let mainWindow, store, drafts, updates, gateway, bridge, bridges, web2apiSetup, browserConnector, runner, quitting = false;
+let draftRecovery = { status: 'ready', message: '' }, draftFlushWaiter;
 
 let serviceStartup = Promise.resolve([]);
 let websitePreparation = Promise.resolve();
@@ -47,7 +50,15 @@ let attachmentSelection;
 const cancelAttachmentSelection = () => attachmentSelection?.controller.abort();
 const emit = payload => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:event', payload); };
 const changed = () => emit({ type: 'state' });
-const getState = () => ({ ...store.publicState(), dataRecovery: { status: dataRecovery.status, message: dataRecovery.message }, appVersion: app.getVersion(), web2apiSetup: web2apiSetup.status(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
+const getState = () => ({ ...store.publicState(), draftRecovery, updates: updates?.status(), dataRecovery: { status: dataRecovery.status, message: dataRecovery.message }, appVersion: app.getVersion(), web2apiSetup: web2apiSetup.status(), gateway: gateway.status(), bridge: bridge.status(), bridges: bridges.status(), browserConnector: browserConnector.status() });
+const validDraftKey = key => {
+  if (typeof key !== 'string' || key.length > 240) throw new Error('Invalid draft destination.');
+  if (key.startsWith('conversation:')) store.conversation(key.slice(13));
+  else if (key.startsWith('new:') && key !== 'new:personal') store.project(key.slice(4));
+  else if (key !== 'new:personal') throw new Error('Invalid draft destination.');
+  return key;
+};
+const draftStorage = () => { if (!drafts) throw new Error(draftRecovery.message || 'Draft storage is unavailable.'); return drafts; };
 const bridgeIsActive = id => bridges.status().some(s => s.id === id && (s.running || s.starting));
 const providerHasActiveBridge = id => store.data.bridgeProfiles.some(p => p.providerId === id && bridgeIsActive(p.id));
 const browserProvider = () => store.data.providers.find(p => p.managedBy === 'browser-connector');
@@ -85,6 +96,31 @@ async function prepareBrowserExtension() {
 
 async function dispatch(method, args = {}) {
   switch (method) {
+    case 'draft:get': return draftStorage().get(validDraftKey(args.key));
+    case 'draft:save': return draftStorage().save(validDraftKey(args.key), args.value);
+    case 'draft:clear': return draftStorage().clear(validDraftKey(args.key));
+    case 'draft:selected': {
+      if (args.key !== undefined) draftStorage().select(validDraftKey(args.key));
+      let key = drafts?.selectedKey || 'new:personal';
+      try { validDraftKey(key); } catch { key = 'new:personal'; }
+      return { key };
+    }
+    case 'draft:flushed': {
+      if (typeof args.ok !== 'boolean') throw new Error('Invalid draft save acknowledgement.');
+      if (args.requestId === draftFlushWaiter?.requestId) draftFlushWaiter.resolve(args.ok);
+      return true;
+    }
+    case 'updates:check': return updates.check();
+    case 'updates:cancel': return updates.cancel();
+    case 'updates:download': {
+      const result = await dialog.showOpenDialog(mainWindow, { title: 'Save the verified Gravity update', properties: ['openDirectory', 'createDirectory'] });
+      return result.canceled ? updates.status() : updates.download(result.filePaths[0]);
+    }
+    case 'updates:reveal': {
+      const current = updates.status();
+      if (current.phase !== 'ready' || !current.filePath) throw new Error('Download and verify an update first.');
+      shell.showItemInFolder(current.filePath); return true;
+    }
     case 'state:get': return getState();
     case 'project:add': {
       let location = args.path;
@@ -122,17 +158,18 @@ async function dispatch(method, args = {}) {
       if (attachmentSelection) throw new Error('Wait for the current file selection to finish, or cancel it first.');
       if (args.requestId !== undefined && (typeof args.requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(args.requestId))) throw new Error('Invalid file selection request.');
       const selection = { requestId: args.requestId || randomUUID(), controller: new AbortController() };
+      if (args.ocr !== undefined && typeof args.ocr !== 'boolean') throw new Error('Invalid PDF scan option.');
       attachmentSelection = selection;
       try {
       const provider = args.providerId ? store.provider(args.providerId) : undefined;
       const capabilities = provider ? providerCapabilities(provider, args.model) : { images: false };
-      const result = await dialog.showOpenDialog(mainWindow, { title: 'Attach files', properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'Text and code', extensions: ['txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'py', 'html', 'css', 'yaml', 'yml', 'xml', 'log'] },
+      const result = await dialog.showOpenDialog(mainWindow, { title: args.ocr ? 'Scan PDF with OCR' : 'Attach files', properties: ['openFile', 'multiSelections'],
+        filters: args.ocr ? [{ name: 'PDF documents', extensions: ['pdf'] }] : [{ name: 'All files', extensions: ['*'] }, { name: 'Text and code', extensions: ['txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'py', 'html', 'css', 'yaml', 'yml', 'xml', 'log'] },
           { name: 'PDF and Office documents', extensions: ['pdf', 'docx', 'xlsx', 'pptx'] },
           ...(capabilities.images ? [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] : []), { name: 'All files', extensions: ['*'] }] });
       selection.controller.signal.throwIfAborted();
       return result.canceled ? { files: [], images: [], rejected: [] } : await attachments.select(result.filePaths, { ...capabilities,
-        signal: selection.controller.signal, onProgress: progress => emit({ type: 'attachment-progress', requestId: selection.requestId, ...progress }) });
+        signal: selection.controller.signal, ocr: !!args.ocr, onProgress: progress => emit({ type: 'attachment-progress', requestId: selection.requestId, ...progress }) });
       } catch (error) { if (selection.controller.signal.aborted) throw new Error('File reading cancelled. Your draft and previous attachments are kept.'); throw error; }
       finally { if (attachmentSelection === selection) attachmentSelection = undefined; }
     }
@@ -140,6 +177,7 @@ async function dispatch(method, args = {}) {
       if (args.requestId === attachmentSelection?.requestId) cancelAttachmentSelection();
       return { cancelled: true };
     }
+    case 'attachments:preview': if (typeof args.id !== 'string') throw new Error('Choose an attached file to preview.'); return attachments.preview(args.id);
     case 'conversation:stop': return runner.stop(args.id);
     case 'approval:resolve': if (typeof args.approved !== 'boolean') throw new Error('Approval must be true or false.'); return runner.resolve(args.id, args.approved);
     case 'provider:save': {
@@ -156,14 +194,25 @@ async function dispatch(method, args = {}) {
       store.data.providers = store.data.providers.filter(p => p.id !== args.id); store.save(); changed(); return true;
     }
     case 'provider:models': return discoverModels(store.provider(args.id));
+    case 'provider:discoverAndSave': {
+      const stamp = store.providerConnectionStamp(args.id);
+      const models = await discoverModels(store.provider(args.id));
+      if (store.providerConnectionStamp(args.id) !== stamp) throw new Error('Connection changed during model discovery. Discover models again.');
+      const current = store.data.providers.find(provider => provider.id === args.id);
+      const result = store.saveProvider({ id: current.id, name: current.name, type: current.type, baseUrl: current.baseUrl,
+        models, defaultModel: models.includes(current.defaultModel) ? current.defaultModel : models[0] || '' });
+      changed(); return result;
+    }
     case 'provider:capabilities': return providerCapabilities(store.provider(args.id), args.model);
     case 'provider:test': {
       const started = Date.now();
+      const stamp = store.providerConnectionStamp(args.id);
+      const chosen = store.provider(args.id);
+      const model = typeof args.model === 'string' && args.model.trim() || chosen.defaultModel;
       let result;
-      try { result = await testProviderGeneration(store.provider(args.id), { model: args.model, browserStatus: browserConnector.status() }); }
+      try { result = await testProviderGeneration(chosen, { model: args.model, browserStatus: browserConnector.status() }); }
       catch (error) { result = { ok: false, message: cleanProviderError(error), code: error.code }; }
-      const provider = store.data.providers.find(p => p.id === args.id);
-      if (provider) provider.lastTest = { ...result, model: args.model, checkedAt: new Date().toISOString(), durationMs: Date.now() - started };
+      if (model) store.recordProviderTest(args.id, result, { model, checkedAt: new Date().toISOString(), durationMs: Date.now() - started, connectionStamp: stamp });
       changed(); return result;
     }
     case 'data:export': {
@@ -297,9 +346,35 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => { if (url !== (devUrl || pathToFileURL(entry).href)) event.preventDefault(); });
   mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) { cancelAttachmentSelection(); attachments.clear(); } });
   mainWindow.on('closed', () => { cancelAttachmentSelection(); attachments.clear(); });
+  let closeAllowed = false;
+  const ownedWindow = mainWindow;
+  ownedWindow.on('close', event => {
+    if (closeAllowed || ownedWindow.webContents.isDestroyed()) return;
+    event.preventDefault();
+    if (draftFlushWaiter) return;
+    const requestId = randomUUID();
+    let timer, settling = false;
+    const resolve = async (saved = false) => {
+      if (settling) return;
+      settling = true; clearTimeout(timer);
+      if (!saved && !ownedWindow.isDestroyed()) {
+        const { response } = await dialog.showMessageBox(ownedWindow, {
+          type: 'warning', buttons: ['Keep editing', 'Discard unsaved drafts'], defaultId: 0, cancelId: 0,
+          title: 'Drafts could not be saved',
+          message: 'Some drafts could not be saved. Keep Gravity open to retry saving, or discard the unsaved drafts and close.',
+        });
+        if (response === 0) { draftFlushWaiter = undefined; closeAllowed = false; return; }
+      }
+      draftFlushWaiter = undefined; closeAllowed = true;
+      if (!ownedWindow.isDestroyed()) ownedWindow.close();
+    };
+    draftFlushWaiter = { requestId, resolve };
+    timer = setTimeout(() => { void resolve(false); }, 10000);
+    emit({ type: 'draft-flush', requestId });
+  });
   mainWindow.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(mainWindow, { type: 'question', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0, title: 'Unsaved changes', message: 'Close the app and discard unsaved editor changes?' });
-    if (choice === 1) event.preventDefault();
+    if (choice === 1) event.preventDefault(); else closeAllowed = false;
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   if (devUrl) mainWindow.loadURL(devUrl); else mainWindow.loadFile(entry);
@@ -313,6 +388,9 @@ else {
     const encrypt = value => { if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') throw new Error('OS credential encryption is unavailable.'); return safeStorage.encryptString(value).toString('base64'); };
     const decrypt = value => safeStorage.decryptString(Buffer.from(value, 'base64'));
     store = new Store(path.join(app.getPath('userData'), 'state.json'), { encrypt, decrypt });
+    try { drafts = new DraftStore(path.join(app.getPath('userData'), 'drafts.json'), { encrypt, decrypt }); }
+    catch { draftRecovery = { status: 'error', message: 'Saved drafts could not be opened. The original draft file is preserved; other app features remain available.' }; }
+    updates = new UpdateService({ version: app.getVersion(), onChange: changed });
     importEnvironmentProviders(store);
     store.save();
     gateway = new Gateway({ getProviders: () => store.publicState().providers, getProvider: id => store.provider(id), onChange: changed });
@@ -374,6 +452,7 @@ else {
 app.on('before-quit', event => {
   if (quitting || !runner) return;
   event.preventDefault(); quitting = true;
+  updates?.cancel(); cancelAttachmentSelection();
   for (const operation of terminals.values()) operation.stop();
   Promise.allSettled([runner.shutdown(), web2apiSetup.close(), gateway.stop(), bridge.stop(), bridges.shutdown(), browserConnector.shutdown()]).then(() => serviceStartup).finally(() => app.quit());
 });

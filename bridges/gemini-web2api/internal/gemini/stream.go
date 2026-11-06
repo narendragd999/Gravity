@@ -7,8 +7,9 @@ import (
 )
 
 type StreamParser struct {
-	prevText string
-	buf      string
+	prevText     string
+	buf          string
+	receivedText bool
 }
 
 func NewStreamParser() *StreamParser {
@@ -18,6 +19,7 @@ func NewStreamParser() *StreamParser {
 // ResetBuffer clears the line buffer before a retry attempt while preserving prevText across retries.
 func (p *StreamParser) ResetBuffer() {
 	p.buf = ""
+	p.receivedText = false
 }
 
 func (p *StreamParser) Feed(chunk string) ([]string, error) {
@@ -37,6 +39,7 @@ func (p *StreamParser) Feed(chunk string) ([]string, error) {
 
 		texts := ExtractTextsFromLine(line)
 		for _, t := range texts {
+			p.receivedText = true
 			// Skip if this text segment has already been fully processed or is identical to the last one.
 			if t == p.prevText || strings.HasPrefix(p.prevText, t) {
 				continue

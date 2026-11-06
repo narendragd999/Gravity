@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,10 +19,15 @@ type UpstreamError struct {
 	Status int
 	Kind   string
 	Msg    string
+	Cause  error
 }
 
 func (e *UpstreamError) Error() string {
 	return e.Msg
+}
+
+func (e *UpstreamError) Unwrap() error {
+	return e.Cause
 }
 
 type Requester interface {
@@ -228,8 +234,9 @@ func (c *Client) Generate(prompt string, opt ModelOptions, fileRefs []string) (s
 
 	blRefreshed := false
 	var lastErr error
+	attempts := max(1, c.Cfg.RetryAttempts)
 
-	for attempt := 0; attempt < c.Cfg.RetryAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		req, err := http.NewRequest("POST", reqURL, strings.NewReader(bodyStr))
 		if err != nil {
 			return "", err
@@ -262,6 +269,10 @@ func (c *Client) Generate(prompt string, opt ModelOptions, fileRefs []string) (s
 				} else {
 					text, err := ExtractResponseText(string(rawBytes))
 					if err != nil {
+						// A completed but empty response must not replay the prompt.
+						if errors.Is(err, ErrEmptyResponse) {
+							return "", &UpstreamError{Kind: "empty_response", Msg: err.Error(), Cause: err}
+						}
 						lastErr = &UpstreamError{Kind: "bard", Msg: err.Error()}
 					} else {
 						return text, nil
@@ -270,8 +281,8 @@ func (c *Client) Generate(prompt string, opt ModelOptions, fileRefs []string) (s
 			}
 		}
 
-		if attempt < c.Cfg.RetryAttempts-1 {
-			c.Logf("Retry %d/%d: %v", attempt+1, c.Cfg.RetryAttempts, lastErr)
+		if attempt < attempts-1 {
+			c.Logf("Retry %d/%d: %v", attempt+1, attempts, lastErr)
 			time.Sleep(time.Duration(c.Cfg.RetryDelaySec) * time.Second)
 		}
 	}
@@ -312,8 +323,9 @@ func (c *Client) GenerateStream(prompt string, opt ModelOptions, fileRefs []stri
 	blRefreshed := false
 	parser := NewStreamParser()
 	var lastErr error
+	attempts := max(1, c.Cfg.RetryAttempts)
 
-	for attempt := 0; attempt < c.Cfg.RetryAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		parser.ResetBuffer()
 
 		req, err := http.NewRequest("POST", reqURL, strings.NewReader(bodyStr))
@@ -346,15 +358,15 @@ func (c *Client) GenerateStream(prompt string, opt ModelOptions, fileRefs []stri
 				if err == nil {
 					return nil
 				}
-				if isClientDisconnect(err) {
+				if errors.Is(err, ErrEmptyResponse) || isClientDisconnect(err) {
 					return err
 				}
 				lastErr = err
 			}
 		}
 
-		if attempt < c.Cfg.RetryAttempts-1 {
-			c.Logf("Stream retry %d/%d: %v", attempt+1, c.Cfg.RetryAttempts, lastErr)
+		if attempt < attempts-1 {
+			c.Logf("Stream retry %d/%d: %v", attempt+1, attempts, lastErr)
 			time.Sleep(time.Duration(c.Cfg.RetryDelaySec) * time.Second)
 		}
 	}
@@ -364,9 +376,15 @@ func (c *Client) GenerateStream(prompt string, opt ModelOptions, fileRefs []stri
 
 func (c *Client) streamAttempt(body io.Reader, parser *StreamParser, emit func(string) error) error {
 	reader := bufio.NewReader(body)
+	// A retry may repeat the already emitted prefix. It still must receive an
+	// answer envelope; a prior partial answer cannot make an empty retry pass.
+	parser.receivedText = false
 	for {
 		lineBytes, err := reader.ReadBytes('\n')
 		if len(lineBytes) > 0 {
+			if err == io.EOF && lineBytes[len(lineBytes)-1] != '\n' {
+				lineBytes = append(lineBytes, '\n')
+			}
 			deltas, parseErr := parser.Feed(string(lineBytes))
 			if parseErr != nil {
 				return &UpstreamError{Kind: "bard", Msg: parseErr.Error()}
@@ -379,6 +397,9 @@ func (c *Client) streamAttempt(body io.Reader, parser *StreamParser, emit func(s
 		}
 		if err != nil {
 			if err == io.EOF {
+				if !parser.receivedText || CleanText(parser.prevText, true) == "" {
+					return &UpstreamError{Kind: "empty_response", Msg: ErrEmptyResponse.Error(), Cause: ErrEmptyResponse}
+				}
 				return nil
 			}
 			return &UpstreamError{Kind: "transport", Msg: err.Error()}

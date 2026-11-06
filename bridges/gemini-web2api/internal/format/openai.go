@@ -312,15 +312,19 @@ func MessagesToPrompt(req models.OpenAIChatRequest) (string, []Image, error) {
 }
 
 var reToolCall = regexp.MustCompile(`(?s)\x60\x60\x60tool_call\s*\n(.*?)\n\x60\x60\x60`)
+var reToolCallStart = regexp.MustCompile(`\x60\x60\x60tool_call\b`)
 
 // ParseToolCalls extracts tool calls from the raw string output of the model.
 // The model is instructed to output tool calls in markdown blocks e.g. ```tool_call\n{...}\n```.
 // This function parses those blocks, removes them from the text, and returns the cleaned text along with structured ToolCalls.
-func ParseToolCalls(text string) (string, []models.OpenAIToolCall) {
+func ParseToolCalls(text string) (string, []models.OpenAIToolCall, error) {
 	var toolCalls []models.OpenAIToolCall
 	matches := reToolCall.FindAllStringSubmatchIndex(text, -1)
+	if len(reToolCallStart.FindAllStringIndex(text, -1)) != len(matches) {
+		return text, nil, ErrInvalidToolCall
+	}
 	if len(matches) == 0 {
-		return text, nil
+		return text, nil, nil
 	}
 
 	var cleanParts []string
@@ -331,33 +335,22 @@ func ParseToolCalls(text string) (string, []models.OpenAIToolCall) {
 		lastEnd = m[1]
 
 		content := strings.TrimSpace(text[m[2]:m[3]])
-		var data struct {
-			Name      string `json:"name"`
-			Arguments any    `json:"arguments"`
+		name, args, err := parseFunctionCallJSON(content)
+		if err != nil {
+			return text, nil, err
 		}
-		if err := json.Unmarshal([]byte(content), &data); err == nil && data.Name != "" {
-			var argsStr string
-			if str, ok := data.Arguments.(string); ok {
-				argsStr = str
-			} else if data.Arguments != nil {
-				b, _ := json.Marshal(data.Arguments)
-				argsStr = string(b)
-			} else {
-				argsStr = "{}"
-			}
-
-			toolCalls = append(toolCalls, models.OpenAIToolCall{
-				ID:   fmt.Sprintf("call_%s", RandHex(8)),
-				Type: "function",
-				Function: models.OpenAIToolCallFunction{
-					Name:      data.Name,
-					Arguments: argsStr,
-				},
-			})
-		}
+		b, _ := json.Marshal(args)
+		toolCalls = append(toolCalls, models.OpenAIToolCall{
+			ID:   fmt.Sprintf("call_%s", RandHex(8)),
+			Type: "function",
+			Function: models.OpenAIToolCallFunction{
+				Name:      name,
+				Arguments: string(b),
+			},
+		})
 	}
 
 	cleanParts = append(cleanParts, text[lastEnd:])
 	clean := strings.TrimSpace(strings.Join(cleanParts, ""))
-	return clean, toolCalls
+	return clean, toolCalls, nil
 }

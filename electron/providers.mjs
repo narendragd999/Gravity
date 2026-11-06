@@ -66,6 +66,7 @@ function redact(message, provider) {
 }
 
 function upstreamError(payload, provider, status = 502) {
+  if (providerType(provider) === 'gemini' && status === 404) return new ProviderError('The selected Gemini model or API version is unavailable. Discover models in connection settings, choose a model that supports generation, check the Base URL, and test the response.', 404, 'model_not_found');
   const detail = payload?.error?.message || payload?.error?.detail || payload?.error || payload?.message || 'The provider returned an error.';
   return new ProviderError(redact(typeof detail === 'string' ? detail : JSON.stringify(detail), provider), status, payload?.error?.code || 'upstream_error');
 }
@@ -91,6 +92,13 @@ async function request(provider, url, body, scope) {
     const raw = await response.text();
     let payload; try { payload = JSON.parse(raw); } catch { payload = { message: raw || response.statusText }; }
     throw upstreamError(payload, provider, response.status);
+  }
+  // The included Gemini bridge explicitly reports a substituted model through
+  // this header. A listed alias/version is otherwise allowed; model names in
+  // response bodies are not evidence of fallback on ordinary hosted APIs.
+  if (body !== undefined && response.headers.get('x-model-fallback')?.trim().toLowerCase() === 'true') {
+    await response.body?.cancel().catch(() => {});
+    throw new ProviderError('The bridge substituted a different model. Refresh its model list, choose an available model, and test the response before sending again.', 502, 'model_fallback');
   }
   return response;
 }
@@ -269,6 +277,48 @@ function finishReason(reason) {
   return 'stop';
 }
 
+const blockedReasons = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'IMAGE_PROHIBITED_CONTENT', 'content_filter']);
+function blockedCompletion(reason) {
+  if (['MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL'].includes(reason)) throw new ProviderError('Gemini could not produce a valid tool call. No action was accepted; check the selected model and bridge version.', 502, 'invalid_tool_call');
+  if (blockedReasons.has(reason)) throw new ProviderError('The model blocked this response. Review the prompt or select another model, then test the connection before sending again.', 422, 'blocked_response');
+}
+
+function completionContent(content) {
+  if (content == null || typeof content === 'string') return content ?? null;
+  if (Array.isArray(content) && content.every(part => part && typeof part === 'object' && ['text', 'output_text', 'input_text'].includes(part.type) && typeof part.text === 'string')) return content.map(part => part.text).join('\n');
+  throw new ProviderError('The provider returned an unsupported answer format. Check the connection type and bridge version.', 502, 'invalid_response');
+}
+
+// A completion marker establishes that generation ended, not that it produced
+// an answer. Keep text parts usable, and preserve valid tool-only agent turns.
+export function validateCompletion(result, provider = {}) {
+  const choice = result?.choices?.[0], message = choice?.message;
+  if (!message || typeof message !== 'object' || Array.isArray(message)) throw new ProviderError('Provider returned no assistant message.', 502, 'invalid_response');
+  blockedCompletion(choice.finish_reason);
+  if (typeof message.refusal === 'string' && message.refusal.trim()) throw new ProviderError('The model declined this request. Review your prompt or choose another model.', 422, 'blocked_response');
+  const content = completionContent(message.content);
+  const calls = message.tool_calls;
+  if (calls !== undefined && (!Array.isArray(calls) || calls.some(call => !call || call.type !== 'function'
+    || typeof call.id !== 'string' || !call.id.trim() || typeof call.function?.name !== 'string' || !call.function.name.trim()
+    || typeof call.function.arguments !== 'string'))) throw new ProviderError('The provider returned an invalid tool call. No action was accepted; check the model and bridge version.', 502, 'invalid_tool_call');
+  for (const call of calls || []) {
+    let args;
+    try { args = JSON.parse(call.function.arguments || '{}'); } catch { /* Reject the complete action batch below. */ }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new ProviderError('The provider returned invalid tool arguments. No action was accepted; check the model and bridge version.', 502, 'invalid_tool_call');
+  }
+  if (!content?.trim() && !calls?.length) {
+    const reasoningOnly = typeof message.reasoning_content === 'string' && !!message.reasoning_content.trim();
+    const geminiBridge = provider.id === 'gemini-local' || /gemini\s*web2api/i.test(provider.name || '');
+    throw new ProviderError(reasoningOnly
+      ? 'The provider returned reasoning without a final answer. No action was accepted. Check the model and its output limit, then test the response.'
+      : geminiBridge
+        ? 'Gemini Web2API returned no answer or valid action. Check the selected model, bridge version and Google session, or use Gemini in normal Chrome. Test the response before sending again.'
+        : 'The provider returned no answer or valid action. Check the selected model and connection, then test the response before sending again.',
+    502, reasoningOnly ? 'reasoning_only_response' : 'empty_response');
+  }
+  return { ...result, choices: [{ ...choice, message: { ...message, content: content ?? null } }, ...result.choices.slice(1)] };
+}
+
 function usageFor(data, type) {
   if (!data) return undefined;
   if (type === 'openai') return data;
@@ -299,8 +349,10 @@ function normalize(data, type, model) {
     }
     finish = finishReason(data.stop_reason);
   } else {
-    if (!data.candidates?.length) throw new ProviderError(`Gemini returned no candidates${data.promptFeedback?.blockReason ? `: ${data.promptFeedback.blockReason}` : '.'}`);
+    if (data.promptFeedback?.blockReason) throw new ProviderError('Gemini blocked this prompt. Review the request or choose another model.', 422, 'blocked_response');
+    if (!data.candidates?.length) throw new ProviderError('Gemini returned no candidates. Check the selected model and Google connection.', 502, 'empty_response');
     const candidate = data.candidates[0];
+    blockedCompletion(candidate.finishReason);
     for (const part of candidate.content?.parts || []) {
       if (part.text) { if (part.thought) reasoning += part.text; else content += part.text; }
       if (part.functionCall) calls.push({ id: part.functionCall.id || `call_${randomUUID()}`, type: 'function', function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args || {}) },
@@ -366,6 +418,42 @@ export async function discoverModels(provider, { signal, timeoutMs = 30_000 } = 
   } finally { scope.close(); }
 }
 
+function collectChoices(choices, incomingChoices) {
+  const deltas = [];
+  for (const incoming of incomingChoices || []) {
+    const index = incoming.index ?? 0;
+    let choice = choices.get(index);
+    if (!choice) { choice = { index, message: { role: 'assistant', content: '' }, finish_reason: null, calls: new Map() }; choices.set(index, choice); }
+    const delta = incoming.delta || {};
+    const text = completionContent(delta.content);
+    if (text) { choice.message.content += text; deltas.push({ index, text }); }
+    if (typeof delta.refusal === 'string') choice.message.refusal = (choice.message.refusal || '') + delta.refusal;
+    if (typeof delta.reasoning_content === 'string') choice.message.reasoning_content = (choice.message.reasoning_content || '') + delta.reasoning_content;
+    if (incoming.finish_reason != null) choice.finish_reason = incoming.finish_reason;
+    if (delta.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) throw new ProviderError('The provider streamed invalid tool calls. No action was accepted.', 502, 'invalid_tool_call');
+    for (const [offset, change] of (delta.tool_calls || []).entries()) {
+      if (!change || typeof change !== 'object' || change.function?.name !== undefined && typeof change.function.name !== 'string'
+        || change.function?.arguments !== undefined && typeof change.function.arguments !== 'string') throw new ProviderError('The provider streamed an invalid tool call. No action was accepted.', 502, 'invalid_tool_call');
+      const callIndex = change.index ?? offset;
+      let call = choice.calls.get(callIndex);
+      if (!call) { call = { id: change.id || `call_${randomUUID()}`, type: change.type || 'function', function: { name: '', arguments: '' } }; choice.calls.set(callIndex, call); }
+      if (change.id) call.id = change.id;
+      if (change.type) call.type = change.type;
+      if (change.function?.name) call.function.name += change.function.name;
+      if (change.function?.arguments) call.function.arguments += change.function.arguments;
+      if (change.thought_signature) call.thought_signature = change.thought_signature;
+    }
+  }
+  return deltas;
+}
+
+function completionChoices(choices) {
+  return [...choices.values()].sort((a, b) => a.index - b.index).map(({ calls, ...choice }) => ({
+    ...choice, message: { ...choice.message, content: choice.message.content || null,
+      ...(calls.size ? { tool_calls: [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => ({ ...call, function: { ...call.function, arguments: call.function.arguments || '{}' } })) } : {}) }
+  }));
+}
+
 export async function complete(provider, body, { signal, onDelta, timeoutMs = DEFAULT_TIMEOUT } = {}) {
   if (onDelta || body.stream) {
     let result, usage;
@@ -373,41 +461,18 @@ export async function complete(provider, body, { signal, onDelta, timeoutMs = DE
     for await (const chunk of streamCompletion(provider, body, { signal, timeoutMs })) {
       if (!result) result = { id: chunk.id, object: 'chat.completion', created: chunk.created, model: chunk.model, choices: [] };
       if (chunk.usage) usage = { ...usage, ...chunk.usage };
-      for (const incoming of chunk.choices || []) {
-        const index = incoming.index ?? 0;
-        let choice = choices.get(index);
-        if (!choice) { choice = { index, message: { role: 'assistant', content: '' }, finish_reason: null, calls: new Map() }; choices.set(index, choice); }
-        const delta = incoming.delta || {};
-        if (delta.content) { choice.message.content += delta.content; if (index === 0) await onDelta?.(delta.content); }
-        if (delta.reasoning_content) choice.message.reasoning_content = (choice.message.reasoning_content || '') + delta.reasoning_content;
-        if (incoming.finish_reason != null) choice.finish_reason = incoming.finish_reason;
-        for (const [offset, change] of (delta.tool_calls || []).entries()) {
-          const callIndex = change.index ?? offset;
-          let call = choice.calls.get(callIndex);
-          if (!call) { call = { id: change.id || `call_${randomUUID()}`, type: 'function', function: { name: '', arguments: '' } }; choice.calls.set(callIndex, call); }
-          if (change.id) call.id = change.id;
-          if (change.function?.name) call.function.name += change.function.name;
-          if (change.function?.arguments) call.function.arguments += change.function.arguments;
-          if (change.thought_signature) call.thought_signature = change.thought_signature;
-        }
-      }
+      for (const { index, text } of collectChoices(choices, chunk.choices)) if (index === 0) await onDelta?.(text);
     }
     if (!result || !choices.size) throw new ProviderError('Provider returned an empty completion stream.');
-    result.choices = [...choices.values()].sort((a, b) => a.index - b.index).map(({ calls, ...choice }) => {
-      if (calls.size) choice.message.tool_calls = [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => {
-        if (!call.function.arguments) call.function.arguments = '{}'; return call;
-      });
-      if (!choice.message.content) choice.message.content = null;
-      return choice;
-    });
+    result.choices = completionChoices(choices);
     if (usage) result.usage = usage;
-    return result;
+    return validateCompletion(result, provider);
   }
   const scope = scopeFor(signal, timeoutMs);
   try {
     const { url, payload } = requestBody(provider, body, false);
     const response = await request(provider, url, payload, scope);
-    return normalize(await jsonResponse(response, provider), providerType(provider), body.model);
+    return validateCompletion(normalize(await jsonResponse(response, provider), providerType(provider), body.model), provider);
   } catch (error) {
     if (scope.signal.aborted) throw scope.signal.reason;
     throw error;
@@ -418,14 +483,20 @@ export async function* streamCompletion(provider, body, { signal, timeoutMs = DE
   const scope = scopeFor(signal, timeoutMs), type = providerType(provider);
   let id = `chatcmpl-${randomUUID()}`, model = body.model, done = false, sawChoice = false;
   const created = Math.floor(Date.now() / 1000), toolIndexes = new Map();
+  const observedChoices = new Map();
   let toolCount = 0, nativeUsage = {};
-  const chunk = (delta, finish = null, index = 0, usage) => ({ id, object: 'chat.completion.chunk', created, model,
+  const observe = value => {
+    collectChoices(observedChoices, value.choices);
+    if (value.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason != null)) validateCompletion({ choices: completionChoices(observedChoices) }, provider);
+    return value;
+  };
+  const chunk = (delta, finish = null, index = 0, usage) => observe({ id, object: 'chat.completion.chunk', created, model,
     choices: [{ index, delta, finish_reason: finish }], ...(usage ? { usage } : {}) });
   try {
     const { url, payload } = requestBody(provider, body, true);
     const response = await request(provider, url, payload, scope);
     if (!response.headers.get('content-type')?.includes('text/event-stream')) {
-      const result = normalize(await jsonResponse(response, provider), type, body.model);
+      const result = validateCompletion(normalize(await jsonResponse(response, provider), type, body.model), provider);
       yield { ...result, object: 'chat.completion.chunk', choices: result.choices.map(choice => ({ index: choice.index, delta: choice.message, finish_reason: choice.finish_reason })) };
       return;
     }
@@ -436,7 +507,7 @@ export async function* streamCompletion(provider, body, { signal, timeoutMs = DE
         if (!Array.isArray(data.choices)) throw new ProviderError('Provider stream event is missing choices.', 502, 'invalid_stream');
         if (data.choices.length) sawChoice = true;
         if (data.choices.some(choice => choice.finish_reason != null)) done = true;
-        yield { id, object: 'chat.completion.chunk', created, model, ...data };
+        yield observe({ id, object: 'chat.completion.chunk', created, model, ...data });
       } else if (type === 'anthropic') {
         const kind = data.type || entry.event;
         if (kind === 'message_start') {
@@ -469,13 +540,14 @@ export async function* streamCompletion(provider, body, { signal, timeoutMs = DE
           yield chunk({}, data.delta.stop_reason ? finishReason(data.delta.stop_reason) : null, 0, usageFor(nativeUsage, type));
         } else if (kind === 'message_stop') { done = true; break; }
       } else {
-        if (data.promptFeedback?.blockReason) throw new ProviderError(`Gemini blocked the prompt: ${data.promptFeedback.blockReason}`);
+        if (data.promptFeedback?.blockReason) throw new ProviderError('Gemini blocked this prompt. Review the request or choose another model.', 422, 'blocked_response');
         if (data.modelVersion) model = data.modelVersion;
         if (data.usageMetadata) nativeUsage = { ...nativeUsage, ...data.usageMetadata };
         if (!data.candidates?.length && data.usageMetadata && sawChoice) {
           yield { id, object: 'chat.completion.chunk', created, model, choices: [], usage: usageFor(nativeUsage, type) };
         }
         for (const candidate of data.candidates || []) {
+          blockedCompletion(candidate.finishReason);
           const delta = sawChoice ? {} : { role: 'assistant' }, index = candidate.index ?? 0;
           sawChoice = true;
           for (const part of candidate.content?.parts || []) {
@@ -494,6 +566,7 @@ export async function* streamCompletion(provider, body, { signal, timeoutMs = DE
     }
     if (!sawChoice) throw new ProviderError('Provider returned an empty completion stream.', 502, 'invalid_stream');
     if (!done) throw new ProviderError('Provider stream ended before a completion marker. Retry the request.', 502, 'incomplete_stream');
+    validateCompletion({ choices: completionChoices(observedChoices) }, provider);
   } catch (error) {
     if (scope.signal.aborted) throw scope.signal.reason;
     throw error;

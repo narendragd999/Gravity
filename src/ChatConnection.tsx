@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowUpRight, CheckCircle2, ChevronDown, Cpu, Globe2, Loader2, Play, RefreshCw, Settings2, XCircle } from 'lucide-react';
-import { AppState, Conversation, Invoke, Provider, ProviderCapabilities, errorText, modelLabel, websiteForModel, websiteNames } from './types';
+import { AppState, Conversation, Invoke, Provider, ProviderCapabilities, errorText, modelLabel, responseCheckFor, websiteForModel, websiteNames } from './types';
 
 export default function ChatConnection({ provider, model, state, conversation, capabilities, disabled, call, onSettings, onBrowserSetup, onWebsiteSetup, onUseProvider }: {
   provider?: Provider; model: string; state: AppState; conversation?: Conversation; capabilities?: ProviderCapabilities;
@@ -41,7 +41,7 @@ export default function ChatConnection({ provider, model, state, conversation, c
   const serviceStatus = status;
   if (failed) status = 'Last request failed';
   const normalChrome = !browser && website && state.providers.find(p => p.managedBy === 'browser-connector' && p.models.includes(`${website}-web`));
-  const lastTest = provider.lastTest?.model === model ? provider.lastTest : undefined;
+  const lastTest = responseCheckFor(provider, model);
   const action = async (name: string, fn: () => Promise<unknown>) => {
     setBusy(name); setNotice('');
     try { const result = await fn(); if (result && typeof result === 'object' && 'error' in result && result.error) throw new Error(String(result.error)); setNotice(name === 'switch' ? 'Connection selected. Review your message, then press Send.' : 'Action complete. Check the connection above, then press Send when ready.'); }
@@ -58,6 +58,8 @@ export default function ChatConnection({ provider, model, state, conversation, c
   try { local = ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(provider.baseUrl).hostname); } catch { /* Saved URL validation belongs to settings. */ }
   const chrome = state.providers.find(p => p.managedBy === 'browser-connector' && p.models.includes('claude-web'));
   const offerChrome = failed && local && !browser && /^claude[-_]/i.test(model) && chrome;
+  const geminiChrome = state.providers.find(item => item.managedBy === 'browser-connector' && item.models.includes('gemini-web'));
+  const offerGeminiChrome = failed && !browser && (provider.type === 'gemini' || local && /^gemini[-_]/i.test(model)) && geminiChrome;
   const alternatives = state.providers.flatMap(item => item.models.map(name => ({ provider: item, model: name }))).filter(item => {
     if (item.provider.id === provider.id && item.model === model) return false;
     if (item.provider.managedBy === 'browser-connector') return connector.running && connector.paired && connector.sites.some(site => site.id === websiteForModel(item.model) && site.connected && !site.busy && !site.error);
@@ -86,6 +88,7 @@ export default function ChatConnection({ provider, model, state, conversation, c
         {(browser || websiteService || profile) && <button type="button" className="secondary-btn" data-testid="chat-prepare-connection" disabled={disabled || !!busy || starting} onClick={() => void prepare()}>{busy === 'prepare' ? <Loader2 size={12} className="spin" /> : runtime?.running || connector.running && browser ? <RefreshCw size={12} /> : <Play size={12} />}{websiteService && !savedSession ? 'Connect website' : browser && connector.running ? 'Open website' : failed ? 'Prepare connection' : 'Start connection'}</button>}
         {websiteService && savedSession && <button type="button" className="secondary-btn" data-testid="chat-sign-in-again" disabled={disabled || !!busy || starting} onClick={() => void action('login', () => { onWebsiteSetup(); return call('web2api:connect', { siteId: website, forceLogin: true }); })}><Globe2 size={12} />Sign in again</button>}
         {offerChrome && <button type="button" className="secondary-btn" data-testid="use-chrome-claude" disabled={disabled || !!busy} onClick={() => void action('switch', () => onUseProvider(chrome.id, 'claude-web'))}>Use Claude in Chrome</button>}
+        {offerGeminiChrome && <button type="button" className="secondary-btn" data-testid="use-chrome-gemini" disabled={disabled || !!busy} onClick={() => void action('switch', () => onUseProvider(geminiChrome.id, 'gemini-web'))}>Use Gemini in normal Chrome</button>}
         <button type="button" className="text-btn" onClick={browser ? onBrowserSetup : websiteService ? onWebsiteSetup : onSettings}><ArrowUpRight size={12} />Open {browser ? 'browser' : websiteService ? 'website' : 'connection'} setup</button>
       </div>
       {failed && alternatives.length > 0 && <div className="chat-connection-actions">{alternatives.map(item => <button type="button" className="text-btn" key={`${item.provider.id}:${item.model}`} disabled={disabled || !!busy} onClick={() => void action('switch', () => onUseProvider(item.provider.id, item.model))}>Use {modelLabel(item.model)}</button>)}</div>}

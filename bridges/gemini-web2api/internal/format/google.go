@@ -160,62 +160,66 @@ func GoogleContentsToPrompt(req models.GoogleGenerateRequest) (string, []Image, 
 
 var (
 	reFencedGoogleCall   = regexp.MustCompile(`(?s)\x60\x60\x60function_call\s*\n(.*?)\n\x60\x60\x60`)
-	reUnfencedGoogleCall = regexp.MustCompile(`(?s)(?:^|\n)function_call\s*\n(\{[^\x60]*?\})`)
+	reGoogleCallStart    = regexp.MustCompile(`\x60\x60\x60function_call\b`)
+	reUnfencedGoogleCall = regexp.MustCompile(`(?m)^[ \t]*function_call[ \t]*\r?\n`)
 )
 
-func ParseGoogleFunctionCalls(text string) (string, []models.GoogleFunctionCall) {
+func ParseGoogleFunctionCalls(text string) (string, []models.GoogleFunctionCall, error) {
 	var calls []models.GoogleFunctionCall
 	clean := text
-
-	for _, m := range reFencedGoogleCall.FindAllStringSubmatch(clean, -1) {
-		var data map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &data); err == nil {
-			if name, ok := data["name"].(string); ok && name != "" {
-				args, _ := data["args"].(map[string]any)
-				if args == nil {
-					args, _ = data["arguments"].(map[string]any)
-				}
-				if args == nil {
-					args = map[string]any{}
-				}
-				calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
-			}
+	matches := reFencedGoogleCall.FindAllStringSubmatch(clean, -1)
+	if len(reGoogleCallStart.FindAllStringIndex(clean, -1)) != len(matches) {
+		return text, nil, ErrInvalidToolCall
+	}
+	for _, m := range matches {
+		name, args, err := parseFunctionCallJSON(strings.TrimSpace(m[1]))
+		if err != nil {
+			return text, nil, err
 		}
+		calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
 	}
 	clean = strings.TrimSpace(reFencedGoogleCall.ReplaceAllString(clean, ""))
 
-	for _, m := range reUnfencedGoogleCall.FindAllStringSubmatch(clean, -1) {
-		var data map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &data); err == nil {
-			if name, ok := data["name"].(string); ok && name != "" {
-				args, _ := data["args"].(map[string]any)
-				if args == nil {
-					args, _ = data["arguments"].(map[string]any)
-				}
-				if args == nil {
-					args = map[string]any{}
-				}
-				calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
-			}
+	// Decode the complete JSON value so nested arguments are not truncated at
+	// the first closing brace. Keep any prose following the value.
+	var cleanParts []string
+	lastEnd := 0
+	for _, m := range reUnfencedGoogleCall.FindAllStringIndex(clean, -1) {
+		if m[0] < lastEnd {
+			return text, nil, ErrInvalidToolCall
 		}
+		decoder := json.NewDecoder(strings.NewReader(clean[m[1]:]))
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return text, nil, ErrInvalidToolCall
+		}
+		name, args, err := parseFunctionCallJSON(string(raw))
+		if err != nil {
+			return text, nil, err
+		}
+		calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
+		cleanParts = append(cleanParts, clean[lastEnd:m[0]])
+		lastEnd = m[1] + int(decoder.InputOffset())
 	}
-	clean = strings.TrimSpace(reUnfencedGoogleCall.ReplaceAllString(clean, ""))
+	cleanParts = append(cleanParts, clean[lastEnd:])
+	clean = strings.TrimSpace(strings.Join(cleanParts, ""))
 
 	if len(calls) == 0 && strings.HasPrefix(strings.TrimSpace(clean), "{") {
 		var data map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimSpace(clean)), &data); err == nil {
-			if name, ok := data["name"].(string); ok && name != "" {
-				args, hasArgs := data["args"].(map[string]any)
-				if !hasArgs {
-					args, hasArgs = data["arguments"].(map[string]any)
+			_, hasName := data["name"]
+			_, hasArgs := data["args"]
+			_, hasArguments := data["arguments"]
+			if hasName && (hasArgs || hasArguments) {
+				name, args, err := parseFunctionCallJSON(clean)
+				if err != nil {
+					return text, nil, err
 				}
-				if hasArgs {
-					calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
-					clean = ""
-				}
+				calls = append(calls, models.GoogleFunctionCall{Name: name, Args: args})
+				clean = ""
 			}
 		}
 	}
 
-	return clean, calls
+	return clean, calls, nil
 }

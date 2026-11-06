@@ -10,16 +10,26 @@ The Gemini/Claude snapshots are included in this source repository. Their execut
 
 | Snapshot | Upstream | Pinned commit | Local changes |
 | --- | --- | --- | --- |
-| [Gemini Web2API](gemini-web2api/README.md) | [ikhsan3adi/gemini-web2api](https://github.com/ikhsan3adi/gemini-web2api) | [`4b9ce2674313dac8940f9277bd89a6c550dc1b0e`](https://github.com/ikhsan3adi/gemini-web2api/tree/4b9ce2674313dac8940f9277bd89a6c550dc1b0e) | Source and build files match the inspected checkout. Upstream GitHub workflows and funding metadata were omitted. |
+| [Gemini Web2API](gemini-web2api/README.md) | [ikhsan3adi/gemini-web2api](https://github.com/ikhsan3adi/gemini-web2api) | [`4b9ce2674313dac8940f9277bd89a6c550dc1b0e`](https://github.com/ikhsan3adi/gemini-web2api/tree/4b9ce2674313dac8940f9277bd89a6c550dc1b0e) | Includes the local empty-response, retry, tool-parser, and SSE changes listed below, plus regression tests. Upstream GitHub workflows and funding metadata were omitted. |
 | [Claude Web2API](claude-web2api/README.md) | [cyberanrhy/claude-web2api](https://github.com/cyberanrhy/claude-web2api) | [`3715e797523890899ddc9f5839073a6459aa5846`](https://github.com/cyberanrhy/claude-web2api/tree/3715e797523890899ddc9f5839073a6459aa5846) | Includes the three existing local Python changes listed below and an added dependency manifest. Upstream `server.log` was omitted. |
 
-Snapshots were copied on 2026-11-04. No nested Git metadata, virtual environment, dependency cache, binary, log, active configuration, or account cookie file is included. Gemini's upstream `config.example.json` is an example and contains placeholders. Upstream README files are preserved as reference material; their claims are not Gravity validation results.
+Snapshots were copied on 2026-11-04 and subsequently changed as documented here. The source repository and source archive exclude nested Git metadata, virtual environments, dependency caches, binaries, logs, active configurations, and account cookie files. Gemini's upstream `config.example.json` is an example and contains placeholders. Upstream README files are preserved as reference material; their claims are not Gravity validation results.
 
 ## Gemini
 
 The Go source includes its `go.mod`, `go.sum`, tests, Docker build files, example configuration, and upstream [MIT license](gemini-web2api/LICENSE), copyright 2026 Ikhsan Satriadi. The pinned `go.mod` declares **Go 1.26.5**; use that requirement when building this snapshot even if older upstream README prose names an earlier toolchain.
 
-Gravity's Gemini bridge manager uses a separately prepared executable and a user-selected private configuration. The source snapshot does not include the local Gemini executable or any user's configuration or cookies.
+Gravity 1.9.0 adds these local changes to the pinned Gemini source:
+
+1. Empty or metadata-only generation and streaming responses fail with `empty_response`, without replaying the prompt. Zero or negative retry counts perform one request.
+2. The stream reader accepts valid final JSON without a trailing newline, preserves cumulative prefixes, and rejects an empty retry even after an earlier partial answer.
+3. OpenAI and Google tool parsers validate the complete action batch. Malformed or incomplete fences and invalid arguments return an error instead of discarding bad blocks or returning only valid calls. Valid tool-only replies remain supported.
+4. Chat/Google streaming emits an error event when generation fails, and JSON endpoints return explicit failure codes. Empty output does not produce a successful finish marker.
+5. Added extraction, stream, tool-parser, and endpoint tests use authored fixtures and local HTTP mocks. Existing server tests were made deterministic instead of calling a live upstream service.
+
+The optional **`Gravity-Gemini-Web2API-1.9.0-x64.exe`** is generated as an **unsigned development build** by `scripts/package-gemini.mjs` or the full Windows development release check. It is placed in `release/`, included in reviewable Windows development workflow artifacts, and added to the versioned checksum file when present. Its linked version is `gravity-1.9.0`. The signed release workflow publishes the desktop and source archive and excludes this optional bridge by default; the bridge is not bundled into the desktop executable or delivered by its verified update download.
+
+Gravity's Gemini bridge manager launches the executable and private configuration the user explicitly selects. An existing external executable is retained until the user chooses the rebuilt one. Follow the [beginner Gemini guide](../docs/GEMINI.md) for artifact availability, explicit selection, model discovery, and private cookie/configuration setup. No working configuration or account cookies are provided.
 
 The upstream example binds to all interfaces and uses a public sample API key. For a local external launch, use a private configuration with `host` set to `127.0.0.1`, your own API key, and `log_requests` disabled.
 
@@ -43,4 +53,4 @@ Gravity supplies Windows `Setup.cmd`, `Start.cmd`, and `config.example.json` alo
 
 ## Validation scope
 
-Copied source files were checked against their source checkout, and selected files were scanned for high-confidence embedded credentials before inclusion. The Claude Python files parse successfully. These source snapshots were not installed or launched as part of their inclusion, and no live Gemini or Claude inference was verified.
+The initial snapshots were checked against their source checkout, and selected files were scanned for high-confidence embedded credentials before inclusion. The later Gemini changes passed 57 top-level Go tests (99 including subtests) across five tested packages with Go 1.26.5. These checks use local fixtures and mocks; they do not establish live Gemini account/model compatibility. The Claude Python files parse successfully. No live Gemini or Claude inference was verified for these source changes.

@@ -21,7 +21,7 @@ async function fixture(t, completeFn = async () => response(), options = {}) {
   const events = [];
   const runner = new AgentRunner({ store, workspace, emit: e => events.push(e), completeFn });
   t.after(async () => { await runner.shutdown(); assert.equal(path.dirname(directory), os.tmpdir()); await fs.rm(directory, { recursive: true, force: true }); });
-  const conversation = store.createConversation({ projectId: 'project', ...options });
+  const conversation = store.createConversation({ projectId: 'project', model: 'permission-fixture', ...options });
   const start = (content = 'Perform the fixture task.', id = conversation.id) => { runner.start(id, content); return runner.runs.get(id).promise; };
   return { directory, project, file, store, workspace, runner, events, conversation, start };
 }
@@ -175,7 +175,7 @@ test('concurrent conversations keep independent permission policies', { timeout:
     const step = counts.get(prompt) || 0; counts.set(prompt, step + 1);
     return !step ? response(null, [toolCall('run_command', { command: prompt })]) : response('Done.');
   });
-  const automatic = f.store.createConversation({ projectId: 'project', permissionMode: 'full', confirmFullAccess: true });
+  const automatic = f.store.createConversation({ projectId: 'project', model: 'permission-fixture', permissionMode: 'full', confirmFullAccess: true });
   fakeCommand(f.workspace, executed);
   const askDone = f.start('ask-conversation'); const fullDone = f.start('full-conversation', automatic.id);
   const id = await pendingApproval(f.runner); await fullDone;

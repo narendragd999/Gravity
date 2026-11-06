@@ -1,0 +1,82 @@
+name: Prepare signed Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable tag at this commit, for example v1.9.0
+        type: string
+        required: true
+      create_draft:
+        description: Create a GitHub draft after the signed candidate passes all checks
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gravity-signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed-candidate:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: signed-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.22.2
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            bridges/multi-web2api/package-lock.json
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: bridges/gemini-web2api/go.sum
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install the locked website bridge driver
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci --prefix bridges/multi-web2api
+      - name: Build and verify the signed candidate
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GRAVITY_SIGNER_CERT_SHA256: ${{ vars.GRAVITY_SIGNER_CERT_SHA256 }}
+          GOTOOLCHAIN: local
+        run: node scripts/release-build.mjs --tag "$env:RELEASE_TAG"
+      - name: Keep signed candidate artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Gravity-Windows-signed-candidate-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            release/Gravity-*-x64.exe
+            release/Gravity-*-source.zip
+            release/SHA256SUMS-*.txt
+      - name: Create a reviewable draft release
+        if: inputs.create_draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: pwsh
+        run: |
+          $releaseVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$releaseVersion") { throw 'Release tag differs from the package version.' }
+          $releaseAssets = @("release/Gravity-$releaseVersion-x64.exe", "release/Gravity-$releaseVersion-source.zip", "release/SHA256SUMS-$releaseVersion.txt")
+          $releaseNotes = "docs/RELEASE-$releaseVersion.md"
+          if (!(Test-Path -LiteralPath $releaseNotes)) { throw 'Versioned release notes are required.' }
+          & gh release create $env:RELEASE_TAG @releaseAssets --verify-tag --draft --title "Gravity $releaseVersion" --notes-file $releaseNotes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

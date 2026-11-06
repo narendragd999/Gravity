@@ -4,13 +4,13 @@ A portable Windows desktop workspace for AI chat, local projects, and coding age
 
 ## Run Gravity
 
-Double-click **`Gravity-1.8.0-x64.exe`** in `release/`. No app installation, Node.js, Python, or Git is required. The website service and its Node runtime are included in this executable. Copy it to any folder on a supported Windows 10/11 x64 computer and launch it there. Install Chrome or Edge to connect a website account.
+Double-click **`Gravity-1.9.0-x64.exe`** in `release/`. No app installation, Node.js, Python, or Git is required. The website service and its Node runtime are included in this executable. Copy it to any folder on a supported Windows 10/11 x64 computer and launch it there. Install Chrome or Edge to connect a website account.
 
 Gravity starts its Browser Connector and local API automatically. Saved Web2API bridge profiles and a configured Gemini bridge also start with the app. Each service has its own status and startup preference; an unavailable bridge does not prevent the desktop from opening. Explicit startup preferences from an existing profile are retained.
 
 ### One-click website connection
 
-1. Open **Settings → Get started** or **Web2API Bridges**.
+1. Open **Settings → Connections → Separate saved website profile** or **Web2API Bridges**.
 2. Choose **Z.ai, ChatGPT, DeepSeek, or Qwen** and click **Connect & start**.
 3. If sign-in is needed, complete it yourself in the separate browser that opens. Open a **new, empty chat**, then **close all windows of that separate browser**. Gravity checks the saved session and continues automatically. This is the same flow for all four websites.
 4. Once the service is ready, click **Test response** to check a real answer, then **Use in this chat** if it is not already selected.
@@ -30,17 +30,18 @@ The included adapters cover Claude, ChatGPT, DeepSeek, Qwen, Z.ai, and Gemini. T
 
 ### Or connect an API provider
 
-Open **Settings → Models & providers**, select a provider preset, enter its API key and model, and save. Use **Test model**, then **Use in this chat**. Custom endpoints and headers are available under advanced connection settings. Local providers such as Ollama still need their own running model service.
+Open **Settings → Models & providers**, select a provider preset, enter its API key, and click **Save & discover models**. Select an available model, save it and use **Test model**, then **Use in this chat**. Custom endpoints and headers are available under advanced connection settings. Local providers such as Ollama still need their own running model service.
 
 ## Clear, separate settings
 
 | Page | Purpose |
 | --- | --- |
-| Get started | Choose the quickest connection method |
+| Connections | Choose a connection and view saved model response checks |
 | Browser Connector | Connect accounts already signed into Chrome |
 | Web2API Bridges | Connect the four bundled websites; manage other bridges under Advanced |
 | Models & providers | Enter API keys and choose models |
-| API | Copy Gravity's local API URL and access token for another app |
+| Share models | Copy Gravity's local API URL and access token for another app |
+| Updates | Check releases; verified downloads require the signing setup |
 | Appearance | Choose a comfortable text size and theme |
 
 The desktop keeps projects and chats in a compact sidebar, with a focused conversation and composer. Click **Connections** for setup, or expand **Connection details** beside the composer for provider status and response-test history. Recovery controls stay visible when needed.
@@ -49,7 +50,11 @@ Text is larger by default, with saved **100%, 110%, and 125%** size choices and 
 
 If the reopened verification browser shows a security check, **keep it open** and complete the check yourself. Gravity waits on that page for up to two minutes. If checks keep repeating, use **Use your normal Chrome tab** and follow Browser Connector setup. Saved sign-ins are retained.
 
-The composer **+** opens a native file picker. Attach UTF-8 text/code, PDF, DOCX, XLSX or PPTX files to any chat, or supported images to an image-capable connection. Documents are read locally into bounded text snapshots; chips show the format and page/sheet/slide count where available. Cancel stops document reading without sending a prompt. **Open folder** selects a project; choose **Build** to edit project files. See [attachment limits](docs/SETUP.md#attach-files-to-a-chat) and the [OpenCode source comparison](docs/OPENCODE-STANDARDIZATION.md).
+The composer **+** opens a native file picker. Attach any file type within the 10 MiB file limit. Text and supported PDF/DOCX/XLSX/PPTX documents supply extracted text; other files supply clearly labelled metadata and a hex preview of at most 1024 bytes. Supported images provide pixels only to image-capable connections. Use **Preview** on a file chip to inspect the literal content or **Scan PDF** for bounded local OCR of scanned pages. Cancel stops document reading without sending a prompt. **Open folder** selects a project; choose **Build** to edit project files. See [attachment limits](docs/SETUP.md#attach-files-to-a-chat) and the [OpenCode source comparison](docs/OPENCODE-STANDARDIZATION.md).
+
+Unsent drafts are encrypted and saved separately for each chat and new-project draft. Switching chats or restarting restores the draft. After restarting, native file chips require **Reselect file** before sending; native paths and attachment access IDs are never saved. Failed draft writes keep the app open unless you explicitly choose to discard them.
+
+The 1.9.0 development executable is unsigned. Windows signing and manual verified update delivery are prepared in [the signing guide](docs/RELEASE-SIGNING.md); the owner must configure a real certificate before a signed release can be built. See [1.9.0 release notes](docs/RELEASE-1.9.0.md).
 
 ## Use Gravity from another app
 
@@ -75,7 +80,7 @@ Provider credentials stored in desktop state use Windows user encryption. Standa
 
 The repository includes [standalone Web2API sources](bridges/README.md) for Gemini/Claude and the new [DeepSeek, Qwen, ChatGPT, and Z.ai bridge](docs/MULTI-WEB2API.md). The new bridge uses direct requests or dedicated website profiles, exposes `http://127.0.0.1:4320/v1`, and has no Browser Connector extension dependency. Each standalone service has its own runtime and private configuration.
 
-Gravity 1.8 adds local PDF/Office text extraction with cancellation and tighter document bounds, plus visible same-tab security recovery in normal Chrome. It retains the 1.7 setup, cleaner desktop, Chat/Plan/Build controls, saved-data migration/backups and project context/review/Undo/run guidance. See [release notes](docs/RELEASE-1.8.0.md), [product priorities and the OrbitDesk naming proposal](docs/PRODUCT-DIRECTION-2026-11-06.md), and the [included Claude Web2API setup guide](docs/CLAUDE-WEB2API-WINDOWS.md).
+Gravity 1.9 adds encrypted per-chat drafts, any-file metadata/extracted context, literal previews, bounded scanned-PDF OCR, persistent model checks, clear Connections/Share models settings and controlled update/signing preparation. It retains the 1.7 setup, cleaner desktop, Chat/Plan/Build controls, saved-data migration/backups and project context/review/Undo/run guidance. See [release notes](docs/RELEASE-1.9.0.md), [product priorities and the OrbitDesk naming proposal](docs/PRODUCT-DIRECTION-2026-11-06.md), and the [included Claude Web2API setup guide](docs/CLAUDE-WEB2API-WINDOWS.md).
 
 Use Node.js 24 with npm on Windows:
 
@@ -98,6 +103,6 @@ npm run test:desktop
 
 Tests use local fixtures and disposable profiles. See [validation results](docs/VALIDATION.md) for their scope.
 
-[Setup and API examples](docs/SETUP.md) · [Browser setup](docs/BROWSER-CONNECTOR.md) · [Gravity 1.8.0 release](docs/RELEASE-1.8.0.md) · [Advanced Web2API](docs/UNIVERSAL-WEB2API.md) · [Permissions](docs/PERMISSIONS.md)
+[Setup and API examples](docs/SETUP.md) · [Browser setup](docs/BROWSER-CONNECTOR.md) · [Gravity 1.9.0 release](docs/RELEASE-1.9.0.md) · [Advanced Web2API](docs/UNIVERSAL-WEB2API.md) · [Permissions](docs/PERMISSIONS.md)
 
 Gravity is an independent application. It is not Google's Antigravity binary or private agent backend. See [research and scope](docs/reverse-engineering.md).

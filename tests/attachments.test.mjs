@@ -29,15 +29,18 @@ test('changed files are rejected before sending while original bytes remain unto
   await fs.writeFile(file, 'after'); await assert.rejects(f.attachments.resolve([selected.files[0].id]), /changed after selection/);
   assert.equal(await fs.readFile(file, 'utf8'), 'after');
 });
-test('unsupported, binary, large and long files report partial selection errors without silently truncating', async t => {
+test('any file format can be selected while byte/text limits and folders produce partial errors', async t => {
   const f = await fixture(t);
-  const files = await Promise.all([f.write('good.py', 'print(1)'), f.write('binary.dat', Buffer.from([0,1,2])), f.write('large.txt', 'x'.repeat(40961)), f.write('long.txt', 'x\n'.repeat(501)), f.write('doc.pdf', '%PDF fixture')]);
+  const files = await Promise.all([f.write('good.py', 'print(1)'), f.write('binary.dat', Buffer.from([0,1,2])), f.write('large.txt', 'x'.repeat(10 * 1024 * 1024 + 1)), f.write('long.txt', 'x'.repeat(60001)), f.write('doc.pdf', '%PDF fixture')]);
   const selected = await f.attachments.select([...files, f.root]);
-  assert.deepEqual(selected.files.map(file => file.name), ['good.py']); assert.equal(selected.rejected.length, 5);
+  assert.deepEqual(selected.files.map(file => file.name), ['good.py', 'binary.dat', 'doc.pdf']); assert.equal(selected.rejected.length, 3);
+  assert.equal(selected.files[1].format, 'binary');
+  assert.match((await f.attachments.preview(selected.files[1].id)).content, /Only file metadata.*hex preview/);
 });
 test('image selection respects model capabilities and validates supported file contents', async t => {
   const f = await fixture(t), image = await f.write('image.png', Buffer.from([137,80,78,71,13,10,26,10]));
-  const textOnly = await f.attachments.select([image]); assert.equal(textOnly.images.length, 0); assert.match(textOnly.rejected[0], /text only/);
+  const textOnly = await f.attachments.select([image]); assert.equal(textOnly.images.length, 0); assert.deepEqual(textOnly.rejected, []); assert.equal(textOnly.files[0].format, 'binary');
+  assert.match((await f.attachments.preview(textOnly.files[0].id)).content, /image pixels cannot be interpreted/);
   const selected = await f.attachments.select([image], { images: true }); assert.equal(selected.images.length, 1); assert.deepEqual(selected.rejected, []);
   const fake = await f.write('fake.png', 'not an image'); assert.match((await f.attachments.select([fake], { images: true })).rejected[0], /do not match/);
 });
@@ -86,11 +89,34 @@ test('cancelled extraction removes this attempt IDs and preserves earlier select
   assert.deepEqual(await f.attachments.resolve([previous.files[0].id]), [{ name: 'previous.md', content: 'Keep the earlier attachment.' }]);
 });
 
-test('document extraction failure reports an individual error while other selected files remain usable', async t => {
+test('unreadable documents remain metadata attachments without claiming extracted contents', async t => {
   const f = await fixture(t), good = await f.write('good.docx', docxFixture()), broken = await f.write('broken.pdf', 'damaged PDF bytes'), text = await f.write('notes.md', 'Still accepted.');
   const selected = await f.attachments.select([good, broken, text]);
-  assert.deepEqual(selected.files.map(file => file.name), ['good.docx', 'notes.md']);
-  assert.equal(selected.rejected.length, 1); assert.match(selected.rejected[0], /broken\.pdf:.*damaged|broken\.pdf:.*match its file format/);
-  assert.ok(!selected.rejected[0].includes(f.root));
-  assert.equal((await f.attachments.resolve(selected.files.map(file => file.id)))[1].content, 'Still accepted.');
+  assert.deepEqual(selected.files.map(file => file.name), ['good.docx', 'broken.pdf', 'notes.md']);
+  assert.deepEqual(selected.rejected, []); assert.equal(selected.files[1].format, 'binary');
+  const preview = await f.attachments.preview(selected.files[1].id);
+  assert.match(preview.content, /Extraction note:.*damaged|Extraction note:.*match its file format/);
+  assert.ok(!JSON.stringify(preview).includes(f.root));
+  assert.equal((await f.attachments.resolve(selected.files.map(file => file.id)))[2].content, 'Still accepted.');
+});
+
+test('explicit XML selections through Windows redirected folders resolve the chosen file and keep revision checks', async t => {
+  const f = await fixture(t), target = path.join(f.root, 'actual'); await fs.mkdir(target);
+  const file = path.join(target, 'filelist.xml'); await fs.writeFile(file, '<files><file>example.docx</file></files>');
+  const redirect = path.join(f.root, 'Downloads'); await fs.symlink(target, redirect, process.platform === 'win32' ? 'junction' : 'dir');
+  const selected = await f.attachments.select([path.join(redirect, 'filelist.xml')]);
+  assert.deepEqual(selected.rejected, []); assert.equal(selected.files[0].name, 'filelist.xml');
+  assert.equal((await f.attachments.preview(selected.files[0].id)).content, '<files><file>example.docx</file></files>');
+  await fs.writeFile(file, '<files>changed</files>');
+  await assert.rejects(f.attachments.preview(selected.files[0].id), /changed after selection/);
+});
+
+test('UTF-16 text and arbitrary binary files have honest bounded previews without native paths', async t => {
+  const f = await fixture(t), xml = await f.write('utf16.xml', Buffer.concat([Buffer.from([255,254]), Buffer.from('<note>世界</note>', 'utf16le')]));
+  const binary = await f.write('archive.zip', Buffer.from([0,255,1,2,3]));
+  const selected = await f.attachments.select([xml, binary]); assert.deepEqual(selected.rejected, []);
+  assert.equal((await f.attachments.preview(selected.files[0].id)).content, '<note>世界</note>');
+  const preview = await f.attachments.preview(selected.files[1].id); assert.equal(preview.format, 'binary');
+  assert.match(preview.content, /SHA-256: [a-f0-9]{64}/); assert.match(preview.content, /full file has not been decoded, executed/);
+  assert.ok(!JSON.stringify(preview).includes(f.root));
 });

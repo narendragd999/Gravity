@@ -21,7 +21,8 @@ async function fixture(t, completeFn, options = {}) {
   const events = [];
   const runner = new AgentRunner({ store, workspace, emit: event => events.push(event), completeFn });
   t.after(async () => { await runner.shutdown(); await fs.rm(directory, { recursive: true, force: true }); });
-  const conversation = store.createConversation({ projectId: 'project', ...options });
+  const created = store.createConversation({ projectId: 'project', model: 'mock-model', ...options });
+  const conversation = store.conversation(created.id);
   const start = content => { runner.start(conversation.id, content); return runner.runs.get(conversation.id).promise; };
   return { store, workspace, runner, events, project, conversation, start };
 }
@@ -139,7 +140,7 @@ test('concurrent conversations stream independently and cancel only their own re
       pending.set(prompt, resolve); signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
     });
   });
-  const second = f.store.createConversation({ projectId: 'project' });
+  const second = f.store.createConversation({ projectId: 'project', model: 'mock-model' });
   const firstDone = f.start('first'); f.runner.start(second.id, 'second'); const secondDone = f.runner.runs.get(second.id).promise;
   for (let i = 0; i < 100 && pending.size < 2; i++) await delay(5);
   assert.equal(pending.size, 2); assert.throws(() => f.runner.start(second.id, 'duplicate'), /already running/);
@@ -233,4 +234,46 @@ test('picked files in projectless Chat stay read-only data and persist in subseq
   assert.match(requests[0].messages.find(m => m.role === 'user').content, /unique attachment value/);
   assert.deepEqual(f.store.conversation(f.conversation.id).messages.find(m => m.role === 'user').files, files);
   await f.start('What did it say?'); assert.match(requests[1].messages.find(m => m.role === 'user').content, /unique attachment value/);
+});
+
+test('empty completion marks a failed request, performs no action and keeps failure text out of later history', async t => {
+  let step = 0, writes = 0;
+  const requests = [];
+  const f = await fixture(t, async (_, body) => {
+    requests.push(structuredClone(body));
+    if (!step++) return response(' \n\t');
+    assert.ok(!body.messages.some(message => message.role === 'assistant' && /Request failed|no answer/.test(message.content || '')));
+    return response('Retry answered.');
+  });
+  f.workspace.write = async () => { writes++; };
+  await f.start('Please fix a file.');
+  assert.equal(f.conversation.status, 'error');
+  assert.equal(f.conversation.request.phase, 'Needs attention');
+  assert.equal(f.conversation.failure.code, 'empty_response');
+  assert.equal(f.conversation.failure.retrySafe, false);
+  assert.equal(f.conversation.apiHistory, undefined);
+  assert.equal(writes, 0);
+  assert.equal(f.runner.approvals.size, 0);
+  const failure = f.conversation.messages.at(-1);
+  assert.equal(failure.requestFailure, true);
+  assert.match(failure.content, /^Request failed:/);
+  assert.ok(!f.conversation.messages.some(message => message.content === 'The provider returned an empty response.'));
+  await f.start('Try again.');
+  assert.equal(requests.length, 2);
+  assert.equal(f.conversation.status, 'idle');
+  assert.equal(f.conversation.request.phase, 'Complete');
+  assert.equal(f.conversation.messages.at(-1).content, 'Retry answered.');
+});
+
+test('malformed mixed tool batch never executes a valid action from the same failed response', async t => {
+  let writes = 0;
+  const f = await fixture(t, async () => response(null, [call('propose_file', { path: 'accepted.txt', content: 'unsafe' }),
+    { id: 'bad', type: 'function', function: { name: 'run_command', arguments: 'not-json' } }]));
+  f.workspace.write = async () => { writes++; };
+  await f.start('Work on this project.');
+  assert.equal(f.conversation.status, 'error');
+  assert.equal(f.conversation.failure.code, 'invalid_tool_call');
+  assert.equal(f.runner.approvals.size, 0);
+  assert.equal(writes, 0);
+  assert.equal(f.conversation.apiHistory, undefined);
 });

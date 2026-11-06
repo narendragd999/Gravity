@@ -1,4 +1,4 @@
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, deflateSync } from 'node:zlib';
 
 function crc32(bytes) {
   let value = 0xffffffff;
@@ -53,4 +53,49 @@ export function pdfFixture({ pages = 1, text = 'Hello PDF fixture', encrypted = 
   const xref = Buffer.byteLength(pdf);
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n `).join('\n')}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R ${encrypted ? `/Encrypt ${objects.length} 0 R /ID [<00112233445566778899001122334455> <00112233445566778899001122334455>]` : ''} >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf);
+}
+
+// Image-only PDF fixture with a small authored bitmap alphabet. It contains no
+// text operators or font objects, so a successful read must use local OCR.
+export function scannedPdfFixture({ text = 'GRAVITY OCR TEST 12345', pages = 1 } = {}) {
+  const glyphs = {
+    ' ': ['00000','00000','00000','00000','00000','00000','00000'],
+    G: ['01110','10001','10000','10111','10001','10001','01110'],
+    R: ['11110','10001','10001','11110','10100','10010','10001'],
+    A: ['01110','10001','10001','11111','10001','10001','10001'],
+    V: ['10001','10001','10001','10001','10001','01010','00100'],
+    I: ['11111','00100','00100','00100','00100','00100','11111'],
+    T: ['11111','00100','00100','00100','00100','00100','00100'],
+    Y: ['10001','10001','01010','00100','00100','00100','00100'],
+    O: ['01110','10001','10001','10001','10001','10001','01110'],
+    C: ['01110','10001','10000','10000','10000','10001','01110'],
+    E: ['11111','10000','10000','11110','10000','10000','11111'],
+    S: ['01111','10000','10000','01110','00001','00001','11110'],
+    1: ['00100','01100','00100','00100','00100','00100','01110'],
+    2: ['01110','10001','00001','00010','00100','01000','11111'],
+    3: ['11110','00001','00001','01110','00001','00001','11110'],
+    4: ['00010','00110','01010','10010','11111','00010','00010'],
+    5: ['11111','10000','10000','11110','00001','00001','11110'],
+  };
+  const scale = 8, width = Math.max(120, text.length * 6 * scale + 64), height = 160;
+  const pixels = Buffer.alloc(width * height, 255);
+  for (let index = 0; index < text.length; index++) {
+    const glyph = glyphs[text[index]] || glyphs[' '];
+    for (let row = 0; row < 7; row++) for (let column = 0; column < 5; column++) if (glyph[row][column] === '1') {
+      for (let y = 0; y < scale; y++) for (let x = 0; x < scale; x++) pixels[(48 + row * scale + y) * width + 32 + index * 6 * scale + column * scale + x] = 0;
+    }
+  }
+  const encoded = deflateSync(pixels);
+  const objects = [Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from(`<< /Type /Pages /Kids [${Array.from({ length: pages }, (_, index) => `${4 + index * 2} 0 R`).join(' ')}] /Count ${pages} >>`),
+    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${encoded.length} >>\nstream\n`), encoded, Buffer.from('\nendstream')])];
+  const pageHeight = 612 * height / width;
+  const stream = `q 612 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`;
+  for (let index = 0; index < pages; index++) objects.push(
+    Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 ${pageHeight}] /Resources << /XObject << /Im0 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`),
+    Buffer.from(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`));
+  const chunks = [Buffer.from('%PDF-1.7\n')], offsets = [0]; let length = chunks[0].length;
+  objects.forEach((object, index) => { offsets.push(length); const part = Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), object, Buffer.from('\nendobj\n')]); chunks.push(part); length += part.length; });
+  chunks.push(Buffer.from(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n `).join('\n')}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${length}\n%%EOF\n`));
+  return Buffer.concat(chunks);
 }

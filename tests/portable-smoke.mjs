@@ -10,7 +10,7 @@ import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { Store } from '../electron/store.mjs';
-import { docxFixture, pdfFixture, pptxFixture, xlsxFixture } from './document-fixtures.mjs';
+import { docxFixture, pdfFixture, pptxFixture, xlsxFixture, scannedPdfFixture } from './document-fixtures.mjs';
 
 assert.equal(process.platform, 'win32', 'This smoke test checks the Windows portable executable.');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -126,6 +126,20 @@ try {
   // Inspector evaluations have no ESM referrer. Resolve Electron's built-in
   // module with Node's public createRequire instead of dynamic import.
   const fixtureElectron = "process.getBuiltinModule('module').createRequire(process.execPath)('electron')";
+  const withNativeSelection = async (filenames, action) => {
+    await evaluateMain(`(() => { const {dialog} = ${fixtureElectron}; globalThis.__gravityFixtureDialog = dialog.showOpenDialog; dialog.showOpenDialog = async () => ({canceled:false,filePaths:${JSON.stringify(filenames)}}); return true; })()`);
+    try { return await action(); }
+    finally { await evaluateMain(`(() => { const {dialog} = ${fixtureElectron}; dialog.showOpenDialog = globalThis.__gravityFixtureDialog; delete globalThis.__gravityFixtureDialog; return true; })()`); }
+  };
+  const packagedResources = await evaluateMain(`(() => { const {app} = ${fixtureElectron}, fs = process.getBuiltinModule('fs'), path = process.getBuiltinModule('path'); const directory = path.join(app.getAppPath(),'electron'); return {ocr:fs.readFileSync(path.join(directory,'document-ocr.ps1'),'utf8').includes('Windows.Media.Ocr'),updates:fs.readFileSync(path.join(directory,'update-service.mjs'),'utf8').includes('UpdateService'),policy:JSON.parse(fs.readFileSync(path.join(directory,'release-policy.json'),'utf8'))}; })()`);
+  assert.equal(packagedResources.ocr, true, 'OCR fixed script is available inside the packaged ASAR');
+  assert.equal(packagedResources.updates, true, 'Update service is bundled in the relocated executable');
+  assert.equal(packagedResources.policy.repository, 'narendragd999/Gravity');
+  assert.ok(Array.isArray(packagedResources.policy.trustedSignerSha256));
+  const packagedUpdateState = (await invoke('state:get')).updates;
+  assert.equal(packagedUpdateState.currentVersion, pkg.version); assert.equal(packagedUpdateState.busy, false);
+  assert.equal(packagedUpdateState.trustConfigured, packagedResources.policy.trustedSignerSha256.length > 0, 'Update status reflects the bundled signing policy');
+  assert.equal((await invoke('updates:cancel')).currentVersion, pkg.version, 'Packaged update IPC is available without a download or network check');
   await evaluateMain(`(() => { const {dialog} = ${fixtureElectron}; globalThis.__gravityFixtureDialog = dialog.showOpenDialog; dialog.showOpenDialog = async () => ({canceled:false,filePaths:${JSON.stringify(documentPaths)}}); return true; })()`);
   let selectedDocuments;
   try { selectedDocuments = await invoke('attachments:choose', { requestId: randomUUID() }); }
@@ -147,6 +161,80 @@ try {
   assert.ok(documentRequest, 'All four packaged document readers supply extracted text to the real agent boundary');
   assert.ok(!documentRequest.tools?.length, 'Standalone documents grant no project tools');
   assert.equal(savedDocumentChat.messages.find(message => message.role === 'user').files.length, 4);
+  // Exercise the real composer and packaged OS OCR through the same native
+  // picker boundary as a person. Each fixture is created in this isolated test.
+  const literalText = '<script>globalThis.__portableAttachmentExecuted=true</script>\n<img src="invalid" onerror="globalThis.__portableAttachmentExecuted=true">\nPORTABLE_LITERAL_MARKER';
+  const literalPath = path.join(temporary, 'portable-literal.xml'), binaryPath = path.join(temporary, 'portable-unknown.dat'), scanPath = path.join(temporary, 'portable-scan.pdf');
+  await fs.writeFile(literalPath, literalText); await fs.writeFile(binaryPath, Buffer.from([0, 255, 127, 1, 2, 3, 0, 250])); await fs.writeFile(scanPath, scannedPdfFixture({ pages: 2 }));
+  await page.locator('.conversation-link').filter({ hasText: 'Packaged document smoke' }).first().click();
+  const composer = page.getByRole('textbox', { name: 'Message your agent' });
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Message your agent"]').disabled);
+  const draftKey = `conversation:${documentChat.id}`, draftMarker = 'PORTABLE_DRAFT_MARKER: preserve this unsent message.';
+  await composer.fill(draftMarker);
+  await withNativeSelection([literalPath, binaryPath], async () => {
+    await page.getByTestId('attach-files').click();
+    await page.waitForFunction(() => ['portable-literal.xml', 'portable-unknown.dat'].every(name => document.querySelector('[data-testid="picked-files"]')?.textContent.includes(name)));
+  });
+  await page.getByRole('button', { name: 'Preview portable-literal.xml', exact: true }).click();
+  await page.getByTestId('attachment-preview-content').waitFor();
+  assert.equal(await page.getByTestId('attachment-preview-content').textContent(), literalText, 'Portable preview renders the exact XML/HTML source as literal text');
+  assert.equal(await page.evaluate(() => globalThis.__portableAttachmentExecuted === true), false);
+  assert.equal(await page.getByTestId('attachment-preview').locator('script,img').count(), 0, 'Attachment preview creates no file-controlled HTML elements');
+  await page.getByRole('button', { name: 'Close attachment preview', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview portable-unknown.dat', exact: true }).click();
+  await page.getByTestId('attachment-preview-content').waitFor();
+  const binaryPreview = await page.getByTestId('attachment-preview-content').textContent();
+  assert.match(binaryPreview, /00 ff 7f 01 02 03 00 fa/i);
+  assert.match(await page.getByTestId('attachment-preview').textContent(), /full contents have not been decoded/i);
+  await page.getByRole('button', { name: 'Close attachment preview', exact: true }).click();
+  await withNativeSelection([scanPath], async () => {
+    await page.getByTestId('scan-pdf').click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="picked-files"]')?.textContent.includes('portable-scan.pdf'), null, { timeout: 70000 });
+  });
+  await page.getByRole('button', { name: 'Preview portable-scan.pdf', exact: true }).click();
+  await page.getByTestId('attachment-preview-content').waitFor();
+  assert.match(await page.getByTestId('attachment-preview-content').textContent(), /OCR TEST 12345/);
+  assert.match(await page.getByTestId('attachment-preview').textContent(), /recognized with OCR/);
+  assert.match(await page.getByTestId('attachment-preview').textContent(), /2 pages/, 'Packaged OCR preview reports both scanned pages');
+  await page.getByRole('button', { name: 'Close attachment preview', exact: true }).click();
+  // A browser polling predicate must not treat an IPC Promise as its success
+  // value. Await each snapshot here and keep the exact satisfying snapshot.
+  const draftDeadline = Date.now() + 10000;
+  let savedDraft, draftSaved = false;
+  while (Date.now() < draftDeadline) {
+    savedDraft = await invoke('draft:get', { key: draftKey });
+    draftSaved = savedDraft?.prompt === draftMarker && savedDraft.files.length === 3
+      && ['portable-literal.xml', 'portable-unknown.dat', 'portable-scan.pdf'].every(name => savedDraft.files.some(file => file.name === name))
+      && savedDraft.files.some(file => file.name === 'portable-scan.pdf' && file.ocr === true && file.pages === 2)
+      && savedDraft.files.some(file => file.name === 'portable-unknown.dat' && file.previewKind === 'binary');
+    if (draftSaved) break;
+    await pause(100);
+  }
+  if (!draftSaved) console.error('Authored portable draft did not settle:', JSON.stringify({ files: savedDraft?.files, draftWarning: await page.getByTestId('draft-warning').allTextContents() }));
+  assert.equal(draftSaved, true, 'Encrypted draft persistence settles with all three exact fixture files, two-page OCR metadata and binary preview');
+  assert.ok(savedDraft.files.some(file => file.ocr === true && file.pages === 2));
+  assert.ok(savedDraft.files.some(file => file.previewKind === 'binary'));
+  assert.ok(savedDraft.files.every(file => !('id' in file) && !('filename' in file) && !('path' in file)), 'Encrypted draft metadata carries no native file authority');
+  const draftEnvelope = JSON.parse(await fs.readFile(path.join(profile, 'drafts.json'), 'utf8'));
+  assert.equal(draftEnvelope.version, 1); assert.equal(typeof draftEnvelope.encrypted, 'string');
+  assert.ok(!JSON.stringify(draftEnvelope).includes('PORTABLE_DRAFT_MARKER') && !JSON.stringify(draftEnvelope).includes('portable-literal.xml'), 'OS-encrypted portable drafts expose no prompt or file names on disk');
+  await page.reload();
+  await page.waitForFunction(marker => document.querySelector('[aria-label="Message your agent"]')?.value === marker && !document.querySelector('[aria-label="Message your agent"]').disabled, draftMarker);
+  assert.equal((await invoke('draft:selected')).key, draftKey, 'Renderer reload restores the selected chat');
+  assert.equal(await page.getByTestId('missing-files').locator('.draft-file-missing').count(), 3);
+  assert.equal(await page.getByTestId('picked-files').count(), 0, 'Reload never restores opaque picker IDs');
+  assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isDisabled(), true, 'Restored file metadata must be explicitly reselected or removed');
+  await withNativeSelection([literalPath, binaryPath], async () => {
+    await page.getByRole('button', { name: 'Reselect portable-literal.xml', exact: true }).click();
+    await page.waitForFunction(() => ['portable-literal.xml', 'portable-unknown.dat'].every(name => document.querySelector('[data-testid="picked-files"]')?.textContent.includes(name)));
+  });
+  assert.equal(await page.getByTestId('missing-files').locator('.draft-file-missing').count(), 1);
+  await withNativeSelection([scanPath], async () => {
+    await page.getByRole('button', { name: 'Reselect portable-scan.pdf', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[data-testid="missing-files"]') && document.querySelector('[data-testid="picked-files"]')?.textContent.includes('portable-scan.pdf'), null, { timeout: 70000 });
+  });
+  assert.equal(await composer.inputValue(), draftMarker);
+  assert.equal(await page.getByRole('button', { name: 'Send message', exact: true }).isEnabled(), true, 'Fresh native selection restores attachment authority while preserving the unsent draft');
   assert.equal((await invoke('web2api:refresh')).available, true, 'Standalone executable contains the website service without a companion folder');
   const websiteData = path.join(profile, 'web2api');
   await fs.mkdir(websiteData, { recursive: true });
@@ -178,6 +266,7 @@ try {
   console.log('PASS: Gravity portable launches from a separate folder with spaces, without developer runtimes on PATH; API starts automatically and authentication and saved preferences work.');
   console.log('PASS: Bundled website service connects through the in-app setup without sidecar files, system Node, website traffic, or inference; keys are encrypted and managed startup is saved.');
   console.log('PASS: Packaged PDF, DOCX, XLSX and PPTX readers extract through the native picker and send read-only snapshots to a local fixture without developer runtimes or project tools.');
+  console.log('PASS: Portable literal preview, binary metadata, and Windows OCR work with System32-only PATH. Encrypted drafts reload with explicit file reselection; bundled update policy and status are available without a network check.');
 } finally {
   mainSocket?.close();
   await inspection?.close().catch(() => {});

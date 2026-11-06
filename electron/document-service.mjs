@@ -2,6 +2,7 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_LIMITS, documentError } from './document-limits.mjs';
+import { WindowsPdfOcr } from './document-ocr.mjs';
 export { DOCUMENT_EXTENSIONS, DOCUMENT_LIMITS } from './document-limits.mjs';
 
 // Each reader receives only authorized bytes in a separate process. Heap limits
@@ -10,21 +11,27 @@ export { DOCUMENT_EXTENSIONS, DOCUMENT_LIMITS } from './document-limits.mjs';
 export class DocumentExtractor {
   constructor({ workerPath = new URL('./document-worker.mjs', import.meta.url),
     pdfWorkerPath = new URL('../node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).href,
-    timeoutMs = 15000, runtimePath = process.execPath, runtimeAsNode = !!process.versions.electron } = {}) {
+    timeoutMs = 15000, runtimePath = process.execPath, runtimeAsNode = !!process.versions.electron,
+    ocrReader = new WindowsPdfOcr() } = {}) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('Invalid document reader timeout.');
     if (typeof runtimePath !== 'string' || !path.isAbsolute(runtimePath)) throw new Error('Invalid document reader runtime.');
     this.workerPath = workerPath instanceof URL ? fileURLToPath(workerPath) : workerPath;
     this.pdfWorkerPath = pdfWorkerPath; this.timeoutMs = timeoutMs; this.runtimePath = runtimePath;
-    this.runtimeAsNode = runtimeAsNode; this.active = new Map();
+    this.runtimeAsNode = runtimeAsNode; this.active = new Map(); this.ocr = ocrReader;
   }
-  cancelAll() { return Promise.all([...this.active.values()].map(cancel => cancel())); }
+  cancelAll() { return Promise.all([...this.active.values()].map(cancel => cancel()).concat(this.ocr.cancelAll())); }
   async extract(bytes, options, extra = {}) {
     const extension = typeof options === 'string' ? options : path.extname(options?.filename || '').toLowerCase();
     const signal = typeof options === 'string' ? extra.signal : options?.signal;
     if (!(bytes instanceof Uint8Array) || !DOCUMENT_EXTENSIONS.includes(extension)) throw documentError('unsupported');
     if (!bytes.byteLength || bytes.byteLength > DOCUMENT_LIMITS.bytes) throw documentError('too_large');
     if (signal?.aborted) throw documentError('cancelled');
-    if (this.active.size >= 2) throw documentError('busy');
+    if (this.active.size + this.ocr.active.size >= 2) throw documentError('busy');
+    if (typeof options === 'object' && options?.ocr !== undefined && typeof options.ocr !== 'boolean') throw documentError('unsupported');
+    if (typeof options === 'object' && options?.ocr === true) {
+      if (extension !== '.pdf') throw documentError('unsupported');
+      return this.ocr.extract(bytes, { signal });
+    }
     const data = Uint8Array.from(bytes);
     return new Promise((resolve, reject) => {
       let worker, timer, settled = false, exited = false, exitResolve;

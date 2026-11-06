@@ -2,7 +2,7 @@
 
 ## Run the desktop
 
-Double-click **`Gravity-1.8.0-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
+Double-click **`Gravity-1.9.0-x64.exe`** to run the portable Windows app. No app installation or developer runtime is required. The DeepSeek, Qwen, ChatGPT, and Z.ai service is bundled with its Node runtime. Install Chrome or Edge for website sign-in; a companion folder is not required. For source development, use Node.js 24, run `npm ci`, `npm ci --prefix bridges/multi-web2api`, `npm run build`, and `npm start` in the repository. Git is needed for Git changes, commits, and branches; the editor, chat, and direct file operations work without Git.
 
 `npm run dev` starts Vite on `127.0.0.1:5173` and then opens Electron. `npm run dist` builds a Windows x64 portable executable into `release/`, including the website runtime. `npm run pack` creates an unpacked desktop distribution from existing inputs; run `npm run dist` first to prepare those inputs and the bundled website service.
 
@@ -10,9 +10,15 @@ For the website setup UI during source development, run `node scripts/package-we
 
 A packaged executable still needs a usable website account or model API connection. The optional standalone Gemini and Claude bridges are separate from the four bundled websites. See the [Claude Windows guide](CLAUDE-WEB2API-WINDOWS.md) for the included Python bridge, or [connections explained](CONNECTIONS-EXPLAINED.md) for the difference between a model provider, Gravity's local API, and the two browser connection methods.
 
-## Connect a website with minimum configuration
+## Choose a connection
 
-1. Open **Settings → Get started** or **Web2API Bridges**.
+Open **Settings → Connections**. **Use your normal Chrome** opens Browser Connector setup for website accounts already signed into Chrome. **Connect an API or local model** opens provider settings for an API account, Ollama or LM Studio. The saved connection cards keep service status and timestamped response-test results separate; model discovery or a running service does not establish generation access.
+
+**Share models** is for another app to use models through Gravity's local API. Its key authenticates that other app to Gravity; the provider's API key authenticates Gravity to the model service. You do not need Share models to chat inside Gravity.
+
+### Optional separate saved website profile
+
+1. Open **Settings → Connections**, expand **Separate saved website profile**, or choose **Use a separate website profile** to open **Web2API Bridges**.
 2. Choose **DeepSeek**, **Qwen**, **ChatGPT**, or **Z.ai**. If needed, choose an installed browser under **Browser for the next sign-in**.
 3. Click **Connect & start**.
 4. Sign in yourself in the separate browser that opens and complete any security checks. Open a **new, empty chat**, then **close all windows of that separate browser**. Gravity reopens the saved profile to check it, then starts the service automatically. If that verification browser asks for a security check, keep it open while completing the check.
@@ -42,7 +48,14 @@ These routes select websites. Choose the actual model through the website's own 
 
 ## Configure model providers
 
-Open **Settings → Models & providers**. Save the connection before using **Discover models** or **Test model**. Discovery adds model IDs to the draft; select **Save provider** again to keep them.
+Open **Settings → Connections → Connect an API or local model**, or **Settings → Models & providers**.
+
+1. Choose a service preset or **Custom API**. Presets fill connection details; they do not invent working model IDs.
+2. Enter your API key if required. For a custom service, expand **Connection details & additional models** and enter its API protocol and base URL.
+3. Click **Save & discover models**. Gravity saves the connection, requests model IDs from that service, and saves the returned list. If discovery fails, the connection remains saved so you can correct it or enter model IDs manually.
+4. Select a returned ID as **Default model** and save it. Click **Test model** to check an actual text response, then **Use in this chat**, or choose **Save & use in chat** when saving a model you already know.
+
+For an already saved connection, **Discover models** also saves its discovered model IDs. Save edited connection details before discovery. The list is what the upstream advertises; only a response test establishes whether the selected model works with your credentials at that time.
 
 | Service | API protocol | Example base URL |
 | --- | --- | --- |
@@ -64,32 +77,53 @@ Provider keys and advanced-header values are encrypted in desktop state. Existin
 
 **Test model** sends a short, fixed message to the saved default model and requires a nonempty text response. It does not send conversation history, project files, or tool definitions. It can use provider quota and, for browser models, appear in website history. Discovery remains separate and is not required for testing a manually entered model. Browser tests first check that the connector is running, the extension is paired, and the selected website tab is detected and available. A successful test verifies a text response at that time; test project tools separately with a model that supports tool calls.
 
-The Get started page separates bundled website setup, the Browser Connector extension, and API-key setup. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation. Choose **Use in this chat** to apply the saved default model, or select a specific model from the chat's model menu. The chat shows the selected provider and model above its composer.
+Connections separates normal Chrome, API/local-model setup, the optional separate saved website profile, and sharing models with other apps. Generated website connection details remain under **Advanced generated connection settings**. Models & providers initially selects the provider used by the current conversation. Testing or saving another provider does not select it for that conversation unless you choose **Save & use in chat** or **Use in this chat**. The chat shows the selected provider and model above its composer.
 
 ## Attach files to a chat
 
 1. Open a new or existing chat and click the **+** beside the model selector.
 2. Choose your files in the Windows file picker, then click **Open**. Hold Ctrl to select more than one.
-3. Check the file chips above the message box. Click a chip's **×** to remove it. Cancelling the picker keeps your current draft and attachments.
+3. Click a file chip to preview the literal text that will be sent. The preview does not render file-controlled HTML or Markdown. Click a chip's **×** to remove it. Cancelling the picker keeps your current draft and attachments.
 4. Type what you want Gravity to do with the files, then press **Enter** or **Send**. You can also send a file without typing a message.
 
-UTF-8 text/code and PDF, DOCX, XLSX and PPTX documents are supported in every chat, without opening a project. Gravity extracts document text locally and sends that text as message context. Document images, visual layout and macros are not sent as native document input. Spreadsheet formulas are not calculated; the reader uses stored values/cached formula results.
+The picker accepts regular files of any extension, without opening a project. UTF-8 and BOM-marked UTF-16 text is decoded locally. PDF, DOCX, XLSX and PPTX readers extract document text as message context. Document images, visual layout and macros are not sent as native document input. Spreadsheet formulas are not calculated; the reader uses stored values/cached formula results.
+
+When a format cannot be decoded, Gravity attaches its name, byte size, SHA-256 and at most the first **1,024 bytes as a hex preview**. This includes unknown binary formats, ZIP/legacy Office files, or supported documents whose text cannot be read because they are scanned, protected or damaged. That preview does not mean the full file was read, executed or uploaded to the model. Check the chip and preview before sending; obtain a clean text/modern Office copy, use Scan PDF for a scan, or use an image-capable model when you need visual interpretation.
 
 | Input | Limit |
 | --- | --- |
-| Combined text/code/documents/project excerpts | Four files or excerpts; 60,000 characters total |
-| Picked UTF-8 text/code | 40 KiB and 500 lines per file |
+| Combined text/code/documents/binary previews/project excerpts | Four files or excerpts; 60,000 characters total |
+| Picked regular file, including text/code | 10 MiB per file; decoded text must fit the combined character limit |
 | PDF/Office document | 10 MiB per file; extracted output must fit the combined character limit |
-| PDF | 50 pages; selectable text required |
+| PDF text extraction | 50 pages; selectable text required for this path |
+| Scan PDF with OCR | 10 pages, 10 MiB per PDF; each rendered image dimension at most 1,800 pixels; 60-second deadline; output fits the combined character limit |
 | PowerPoint | 50 slides |
 | Excel | 20 sheets, 2,000 rows and 10,000 cells |
-| PNG/JPEG/WebP/GIF images | Image-capable connection required; eight images, 8 MiB each and 24 MiB combined encoded data |
+| PNG/JPEG/WebP/GIF sent as images | Image-capable connection required; eight images, 8 MiB each and 24 MiB combined encoded data |
 
-The reader runs in a separate process with a deadline and bounded input, XML and Office archive expansion. It rejects protected, damaged, macro-containing or oversized files with a specific message rather than silently truncating them. Legacy DOC/XLS/PPT and macro formats need a modern, macro-free **Save As** copy. General ZIP uploads are unsupported. Scanned or image-only PDFs need an OCR text copy, or page images sent to an image-capable connection.
+Oversized input, extracted text and document structure limits produce an error; they are not silently truncated. Readers run in separate owned processes with deadlines and bounded XML/Office archive expansion. At most two document/OCR readers run at once. Use a modern, macro-free **Save As** copy for legacy or macro Office content you want extracted.
+
+The **+** picker sends supported image bytes only when the selected model accepts images; on a text-only connection, the same selected image becomes a file metadata/hex preview. The image icon, pasted images and dropped images require an image-capable connection and share the eight-image/8-MiB/24-MiB limits. Paste and drop currently handle supported images only; use **+** for documents and other files. Changing a connection repeats image capability validation before sending.
+
+### Read a scanned PDF
+
+1. Click **Scan PDF** beside **+** and select a scanned PDF.
+2. Wait for reading to finish, or click **Cancel**. OCR uses Windows 10/11's PDF renderer and installed text-recognition language through Windows PowerShell 5.1; it needs no downloaded OCR model, Office, Python or cloud OCR service.
+3. Open the file chip's preview and check names, numbers and tables before sending. The preview names the recognizer language. Poor scans, handwriting, unusual layouts and unsupported languages can produce missing or inaccurate text; document images and layout are not preserved.
+
+OCR is explicit and PDF-only. It enforces the table's bounds and reports an error if recognition is unavailable, the PDF cannot be read or no text is recognized. If Windows has no OCR language, install a language with text recognition in Windows settings, then retry. Use a clearer or smaller unencrypted PDF, an OCR text copy, or page images with an image-capable model when recognition fails.
 
 While a document is being read, the composer shows **Reading…** with a **Cancel** button. Cancelling, switching drafts or closing the app stops owned reading work. Previous accepted attachments remain available after cancellation, and a delayed result cannot attach to a different draft.
 
-Files provide read-only message context and their text is saved in chat history and backups. They do not give the agent permission to edit their original folder. If a text file changes after selection, remove it and attach it again before sending. To edit project files, use **Open folder**, choose **Build**, and select the appropriate permissions.
+Files provide read-only message context and their extracted text or binary preview is saved in chat history and backups. Instructions inside files are file content; write your request in the message box. Attachments do not give the agent permission to edit their original folder. Original-file revisions are checked before previewing and sending; changed or expired file selections must be reattached. Images already captured as message image data do not retain a reference to the original file. To edit project files, use **Open folder**, choose **Build**, and select the appropriate permissions.
+
+## Recover unsent drafts
+
+Unsent text, images and project-context snapshots are saved per chat, with separate new-chat drafts for each project and the personal workspace. Switching chats preserves their own drafts. Restarting or reloading Gravity restores the last selection and draft, but file attachments return as **Reselect file** metadata. Select those files again, or remove their chips, before sending; old native paths and picker IDs are never restored as file access. An OCR attachment is reselected through the Scan PDF path.
+
+Drafts are encrypted in `drafts.json` inside the active app-data directory using the Windows user's encryption context. The limit is 128 drafts and 64 MiB of combined draft data before encryption. There is no plaintext fallback. A damaged or undecryptable draft file remains unchanged, and a save failure keeps the current unsaved drafts in the running session with a notice. This file is not a credential/draft migration method for another Windows account or computer.
+
+Closing Gravity first tries to save every dirty draft, including an earlier chat whose save failed. If saving fails or the close wait expires, a native dialog offers **Keep editing** and **Discard unsaved drafts**. Choose Keep editing to preserve the running session and retry saving. Discard unsaved drafts closes without guaranteeing those pending edits were stored; earlier safely saved drafts may remain. Failed sends preserve their draft, and recovery never automatically replays a message.
 
 ## Projects, agents, and changes
 
@@ -128,7 +162,7 @@ Open **Settings → Appearance** for Standard (100%), Comfortable (110%, default
 
 ## Use the desktop's API gateway
 
-Gravity's local API starts with the app by default. In **Settings → API**, copy its URL and access token into your client. The default base URL is `http://127.0.0.1:4318/v1`; a custom port and token are available in advanced settings. Stop the gateway before changing either. The startup toggle applies when Gravity opens; it is not a Windows background service. Existing explicit startup preferences are retained.
+Gravity's local API starts with the app by default. In **Settings → Share models**, copy its Base URL and API key into your client, then choose a listed model and click **Copy selected model ID**. The default base URL is `http://127.0.0.1:4318/v1`; a custom port and token are available in advanced settings. Stop the gateway before changing either. The startup toggle applies when Gravity opens; it is not a Windows background service. Existing explicit startup preferences are retained.
 
 The gateway token is distinct from your provider API keys. Native API clients use it as an OpenAI-style bearer token. The gateway routes requests to configured providers but does not run the desktop agent loop or execute returned tool calls. Client applications own their own tool-execution loop.
 
@@ -198,7 +232,7 @@ An unauthenticated local provider can omit `apiKeyEnv`. Keep tokens out of commi
 
 ## Local data and recovery
 
-New profiles use `%APPDATA%\Gravity\state.json`. An existing Antigravity Studio profile remains at `%APPDATA%\Antigravity Studio\state.json` so saved credentials and extension locations continue to work. It contains project references, conversation content, settings, the gateway token, and encrypted provider secrets. Treat this directory as private local data. Provider encryption is tied to the operating-system user; copying this file to another machine is not a credential migration mechanism.
+New profiles use `%APPDATA%\Gravity\state.json`. An existing Antigravity Studio profile remains at `%APPDATA%\Antigravity Studio\state.json` so saved credentials and extension locations continue to work. It contains project references, conversation content, settings, the gateway token, and encrypted provider secrets. Unsent drafts use the separate encrypted `drafts.json` beside it. Treat this directory as private local data. Provider and draft encryption are tied to the operating-system user; copying these files to another machine is not a credential migration mechanism.
 
 Bundled website sessions live in `web2api` inside that active user-data directory, so moving only the executable on the same computer keeps setup available. The private bridge configuration contains the generated local key and any captured DeepSeek/Qwen session tokens; do not treat it as an encrypted export. ChatGPT/Z.ai retain their dedicated browser profiles.
 

@@ -1,16 +1,33 @@
 // Run through Electron, not node --test. Uses disposable data and a local fixture provider.
-import { app, BrowserWindow, clipboard, dialog } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import assert from 'node:assert/strict';
-import { docxFixture, pdfFixture } from './document-fixtures.mjs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { docxFixture, pdfFixture, scannedPdfFixture } from './document-fixtures.mjs';
 async function runSmoke() {
 const smokePackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 // Electron launched with a script reports its own version; exercise the same
 // app version label that the packaged release reports.
 app.getVersion = () => smokePackage.version;
+const updateVersion = `${Number(smokePackage.version.split('.')[0]) + 1}.0.0`;
+const updateFetches = [];
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = async (address, options) => {
+  const url = String(address);
+  if (url === 'https://api.github.com/repos/narendragd999/Gravity/releases/latest') {
+    updateFetches.push(url);
+    const releaseUrl = `https://github.com/narendragd999/Gravity/releases/tag/v${updateVersion}`;
+    const asset = (name, size) => ({ name, size, state: 'uploaded', browser_download_url: `https://github.com/narendragd999/Gravity/releases/download/v${updateVersion}/${name}` });
+    return new Response(JSON.stringify({ draft: false, prerelease: false, tag_name: `v${updateVersion}`, html_url: releaseUrl,
+      assets: [asset(`Gravity-${updateVersion}-x64.exe`, 16), asset(`SHA256SUMS-${updateVersion}.txt`, 128)] }), { headers: { 'Content-Type': 'application/json' } });
+  }
+  assert.ok(new URL(url).hostname === '127.0.0.1', 'Native smoke permits only its local providers and the mocked GitHub metadata');
+  return nativeFetch(address, options);
+};
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'antigravity-desktop-smoke-'));
 assert.equal(path.dirname(path.resolve(temporary)), path.resolve(os.tmpdir()));
 process.env.ANTIGRAVITY_DATA_DIR = path.join(temporary, 'settings');
@@ -123,14 +140,20 @@ try {
   assert.match(text, /Start a conversation/); assert.doesNotMatch(text, /Interface preview|Untrusted desktop request/);
   const invoke = (method, args) => win.webContents.executeJavaScript(`window.desktop.invoke(${JSON.stringify(method)},${JSON.stringify(args ?? {})})`);
   const evaluate = script => win.webContents.executeJavaScript(script);
-  const waitFor = async (script, message) => {
-    for (let i = 0; i < 200; i++) { if (await evaluate(script)) return; await pause(50); }
+  const waitFor = async (script, message, timeoutMs = 10000) => {
+    for (let i = 0; i < Math.ceil(timeoutMs / 50); i++) { if (await evaluate(script)) return; await pause(50); }
     assert.fail(message);
   };
   const click = async selector => {
     await waitFor(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`, `Enabled control exists: ${selector}`);
     await evaluate(`(() => { for (let parent = document.querySelector(${JSON.stringify(selector)}).parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS' && !parent.open) parent.querySelector('summary').click(); })()`);
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  };
+  const clickConversation = async title => {
+    const find = `Array.from(document.querySelectorAll('button.conversation-link')).find(button => button.textContent.trim() === ${JSON.stringify(title)} && button.getClientRects().length > 0 && !button.disabled)`;
+    await waitFor(`!!(${find})`, `Visible conversation exists: ${title}`);
+    await evaluate(`(${find}).click()`);
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   };
   const setValue = async (selector, value) => {
@@ -157,12 +180,16 @@ try {
   await fs.writeFile(path.join(output, 'gravity-clean-dark.png'), (await win.webContents.capturePage()).toPNG());
   await invoke('settings:save', { theme: 'light', uiScale: 110 }); win.setSize(1450, 960); await pause(250);
   await click('[data-testid="get-started"]');
-  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Get started');
+  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Connections');
   assert.equal(await evaluate(`document.querySelectorAll('.setup-choice-grid > button').length`), 3, 'First setup separates Browser Connector, normal APIs and standalone Web2API');
-  assert.match(await evaluate(`document.querySelector('.settings-nav').textContent`), /Browser Connector.*Models & providers.*Web2API Bridges.*API.*Appearance/);
+  const settingsLabels = await evaluate(`document.querySelector('.settings-nav').textContent`);
+  for (const label of ['Connections', 'Browser Connector', 'Models & providers', 'Web2API Bridges', 'Share models', 'Updates', 'Appearance']) assert.ok(settingsLabels.includes(label), `Settings contains ${label}`);
+  assert.equal(await evaluate(`document.querySelector('[data-testid="website-profile-setup"]').open`), false, 'Separate website-profile setup is collapsed on the Connections overview');
+  assert.match(await evaluate(`document.querySelector('[data-testid="connections-overview"]').textContent`), /Use AI in Gravity.*Share models with other apps/s);
   await pause(200); await fs.writeFile(path.join(output, 'gravity-get-started.png'), (await win.webContents.capturePage()).toPNG());
   await click('[data-testid="setup-web2api"]');
   assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Web2API Bridges');
+  assert.equal(await evaluate(`document.querySelector('[data-testid="website-profile-setup"]').open`), true, 'Bridge settings open the separate website-profile setup');
   for (const website of ['DeepSeek', 'Qwen', 'ChatGPT', 'Z.ai']) assert.ok((await evaluate(`document.querySelector('[data-testid="standalone-web2api-help"]').textContent`)).includes(website));
   await waitFor(`window.desktop.invoke('state:get').then(s => s.web2apiSetup.available && s.web2apiSetup.sites.find(site => site.id === 'zai').enabled)`, 'In-app setup detects only the disposable saved Z.ai fixture');
   assert.equal(await evaluate(`document.querySelector('[data-testid="web2api-site-zai"]').getAttribute('aria-pressed')`), 'true');
@@ -231,8 +258,30 @@ try {
   await click('[data-testid="settings-gateway-tab"]');
   assert.ok(await evaluate(`!document.querySelector('[data-testid="browser-setup"]')`), 'API settings are separate from Browser Connector');
   await pause(250);
-  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'API');
+  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Share models');
   await fs.writeFile(path.join(output, 'gravity-api.png'), (await win.webContents.capturePage()).toPNG());
+  await click('[data-testid="settings-updates-tab"]');
+  await waitFor(`!!document.querySelector('[data-testid="updates-settings"]')`, 'Updates are available as a dedicated settings page');
+  assert.equal(await evaluate(`document.querySelector('.settings-nav .selected').textContent`), 'Updates');
+  assert.ok((await evaluate(`document.querySelector('[data-testid="updates-settings"]').textContent`)).includes(smokePackage.version), 'Updates show the actual application version');
+  const trustConfigured = (await invoke('state:get')).updates.trustConfigured;
+  await click('[data-testid="updates-check"]');
+  await waitFor(`window.desktop.invoke('state:get').then(s => s.updates.phase === 'available' && !s.updates.busy)`, 'A mocked published stable release passes the actual update check boundary');
+  assert.equal((await invoke('state:get')).updates.availableVersion, updateVersion);
+  assert.equal(updateFetches.length, 1);
+  if (!trustConfigured) {
+    assert.match(await evaluate(`document.querySelector('[data-testid="updates-signing-required"]').textContent`), /Release signing setup required/);
+    assert.equal(await evaluate(`document.querySelector('[data-testid="updates-download"]').disabled`), true, 'Unsigned development builds cannot initiate executable downloads');
+    const downloadDirectory = path.join(temporary, 'blocked-update'); await fs.mkdir(downloadDirectory);
+    const savedDialog = dialog.showOpenDialog;
+    dialog.showOpenDialog = async (_window, options) => { assert.equal(options.title, 'Save the verified Gravity update'); return { canceled: false, filePaths: [downloadDirectory] }; };
+    try { await assert.rejects(invoke('updates:download'), /no trusted signing certificate|release signing/i); }
+    finally { dialog.showOpenDialog = savedDialog; }
+    assert.deepEqual(await fs.readdir(downloadDirectory), [], 'Unconfigured signing refuses the download before creating a file');
+    assert.equal(updateFetches.length, 1, 'Signing refusal makes no executable or checksum request');
+  }
+  await assert.rejects(invoke('updates:reveal'), /Download and verify an update first/);
+  await fs.writeFile(path.join(output, 'gravity-updates.png'), (await win.webContents.capturePage()).toPNG());
   await click('[aria-label="Close settings"]');
   const provider = await invoke('provider:save', { name: 'Local smoke fixture', type: 'openai', baseUrl: `http://127.0.0.1:${mock.address().port}/v1`, apiKey: 'smoke-secret-never-store-plain', models: ['smoke-model'], defaultModel: 'smoke-model' });
   assert.equal(provider.hasApiKey, true); assert.equal(provider.apiKey, undefined);
@@ -246,7 +295,7 @@ try {
   assert.match(discoveryOnlyTest.message, /Fixture generation unavailable/);
   await click('button.new-conversation');
   await setValue('.model-selector select', JSON.stringify([provider.id, provider.defaultModel]));
-  const pickedPath = path.join(temporary, 'picked-note.md'); await fs.writeFile(pickedPath, 'SMOKE_PICKED_NOTE: only this explicitly selected file.');
+  const pickedPath = path.join(temporary, 'picked-note.md'); await fs.writeFile(pickedPath, 'SMOKE_PICKED_NOTE: only this explicitly selected file.\n<script>window.smokeAttachmentExecuted=true</script>\n<img src=x onerror="window.smokeAttachmentExecuted=true">');
   const pickedWord = path.join(temporary, 'picked-document.docx');
   const pickedPdf = path.join(temporary, 'picked-document.pdf');
   await fs.writeFile(pickedWord, docxFixture('<w:p><w:r><w:t>SMOKE_DOCX_MARKER: selected Word text.</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Selected table cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'));
@@ -273,6 +322,91 @@ try {
     assert.match(await evaluate(`document.querySelector('[data-testid="picked-files"]').textContent`), /extracted text/i, 'Document chips describe extracted text instead of a native upload');
   }
   finally { dialog.showOpenDialog = originalDialog; }
+  await click('[aria-label="Preview picked-note.md"]');
+  await waitFor(`document.querySelector('[data-testid="attachment-preview-content"]')?.textContent.includes('<script>window.smokeAttachmentExecuted=true</script>')`, 'Attachment preview displays the literal file text');
+  assert.equal(await evaluate(`document.querySelector('[data-testid="attachment-preview"]').querySelectorAll('script,img').length`), 0, 'Attachment HTML stays literal rather than becoming active markup');
+  assert.equal(await evaluate('window.smokeAttachmentExecuted === true'), false);
+  assert.match(await evaluate(`document.querySelector('[data-testid="attachment-preview"]').textContent`), /Instructions inside files are file content/);
+  await click('[aria-label="Close attachment preview"]');
+  await click('[aria-label="Preview picked-document.docx"]');
+  await waitFor(`document.querySelector('[data-testid="attachment-preview-content"]')?.textContent.includes('SMOKE_DOCX_MARKER') && document.querySelector('[data-testid="attachment-preview-content"]')?.textContent.includes('Selected table cell')`, 'Word preview shows the extracted text and table cells');
+  await fs.writeFile(path.join(output, 'gravity-attachment-preview.png'), (await win.webContents.capturePage()).toPNG());
+  await click('[aria-label="Close attachment preview"]');
+
+  const personalDraft = 'SMOKE_DRAFT_PERSONAL kept across conversation changes and reload.';
+  const otherDraft = 'SMOKE_DRAFT_OTHER belongs only to the other saved chat.';
+  await setValue('.composer textarea', personalDraft);
+  const isolatedDraftChat = await invoke('conversation:create', { providerId: provider.id, model: provider.defaultModel, mode: 'chat', title: 'Draft isolation fixture' });
+  await clickConversation('Draft isolation fixture');
+  await waitFor(`document.querySelector('.composer textarea')?.value === '' && !document.querySelector('[data-testid="attach-files"]').disabled`, 'A different chat opens its own empty draft');
+  assert.equal(await evaluate(`!!document.querySelector('[data-testid="picked-files"]')`), false, 'Selected files do not leak into a different chat');
+  await setValue('.composer textarea', otherDraft);
+  await click('button.new-conversation');
+  await waitFor(`document.querySelector('.composer textarea')?.value === ${JSON.stringify(personalDraft)} && document.querySelector('[data-testid="picked-files"]')?.textContent.includes('picked-document.docx')`, 'Switching back restores the personal draft and its session attachments');
+  await waitFor(`window.desktop.invoke('draft:get', {key:'new:personal'}).then(d => d?.prompt === ${JSON.stringify(personalDraft)} && d.files.length === 3)`, 'Draft changes reach encrypted native storage');
+  await waitFor(`window.desktop.invoke('draft:get', {key:${JSON.stringify(`conversation:${isolatedDraftChat.id}`)}}).then(d => d?.prompt === ${JSON.stringify(otherDraft)})`, 'The other chat draft flushes before its native snapshot is inspected');
+  assert.equal((await invoke('draft:get', { key: `conversation:${isolatedDraftChat.id}` })).prompt, otherDraft);
+  const diskDraft = await fs.readFile(path.join(temporary, 'settings', 'drafts.json'), 'utf8');
+  assert.ok(!diskDraft.includes(personalDraft) && !diskDraft.includes('picked-document.docx') && !diskDraft.includes('SMOKE_DOCX_MARKER'), 'Draft text and attachment metadata are encrypted on disk');
+  const decodedDraft = JSON.parse(safeStorage.decryptString(Buffer.from(JSON.parse(diskDraft).encrypted, 'base64')));
+  const savedPersonal = decodedDraft.entries.find(entry => entry.key === 'new:personal').value;
+  assert.equal(savedPersonal.prompt, personalDraft);
+  assert.equal(savedPersonal.files.length, 3);
+  for (const file of savedPersonal.files) for (const field of ['id', 'filename', 'path', 'revision', 'content']) assert.equal(file[field], undefined, `Draft file metadata does not persist native ${field}`);
+  const requestCountBeforeDraftReload = fixtureRequests.length;
+  let staleId;
+  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [pickedPath] });
+  try { staleId = (await invoke('attachments:choose', { providerId: provider.id, model: provider.defaultModel })).files[0].id; }
+  finally { dialog.showOpenDialog = originalDialog; }
+  assert.match((await invoke('attachments:preview', { id: staleId })).content, /SMOKE_PICKED_NOTE/);
+  await new Promise(resolve => { win.webContents.once('did-finish-load', resolve); win.webContents.reload(); });
+  await waitFor(`!!window.desktop && document.querySelector('.composer textarea')?.value === ${JSON.stringify(personalDraft)} && !document.querySelector('[data-testid="attach-files"]').disabled`, 'A renderer reload restores the selected draft from encrypted storage');
+  assert.equal((await invoke('draft:selected')).key, 'new:personal');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-testid="missing-files"] .draft-file-missing').length`), 3, 'Reloaded drafts require explicit native file reselection');
+  assert.equal(await evaluate(`document.querySelector('.send-btn[aria-label="Send message"]').disabled`), true, 'A draft cannot send stale attachment metadata');
+  await assert.rejects(invoke('attachments:preview', { id: staleId }), /select|pick|attach.*again|no longer/i);
+  assert.equal(fixtureRequests.length, requestCountBeforeDraftReload, 'Switching and restoring drafts never sends their content to a provider');
+  await setValue('.model-selector select', JSON.stringify([provider.id, provider.defaultModel]));
+  dialog.showOpenDialog = async (_window, options) => { assert.equal(options.title, 'Attach files'); return { canceled: false, filePaths: [pickedPath, pickedWord, pickedPdf] }; };
+  try {
+    await click('[aria-label="Reselect picked-note.md"]');
+    await waitFor(`!document.querySelector('[data-testid="missing-files"]') && document.querySelectorAll('[data-testid="picked-files"] .composer-context-chip').length === 3`, 'Reselecting files replaces the saved metadata with newly authorized attachments');
+  } finally { dialog.showOpenDialog = originalDialog; }
+  assert.equal(await evaluate(`document.querySelector('.composer textarea').value`), personalDraft, 'Native reselection keeps the draft message');
+  await clickConversation('Draft isolation fixture');
+  await waitFor(`document.querySelector('.composer textarea')?.value === ${JSON.stringify(otherDraft)}`, 'The other chat also restores its own persisted draft after reload');
+  await click('button.new-conversation');
+  await waitFor(`document.querySelector('.composer textarea')?.value === ${JSON.stringify(personalDraft)} && document.querySelectorAll('[data-testid="picked-files"] .composer-context-chip').length === 3`, 'Returning keeps the reselected file grants only in the matching session draft');
+
+  const binaryPath = path.join(temporary, 'picked-binary.fixture'); await fs.writeFile(binaryPath, Buffer.from([0, 255, 17, 33, 44]));
+  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [binaryPath] });
+  try { await click('[data-testid="attach-files"]'); await waitFor(`!!document.querySelector('[aria-label="Preview picked-binary.fixture"]')`, 'The plus picker accepts a binary file with an honest metadata preview'); }
+  finally { dialog.showOpenDialog = originalDialog; }
+  await click('[aria-label="Preview picked-binary.fixture"]');
+  await waitFor(`document.querySelector('[data-testid="attachment-preview-content"]')?.textContent.includes('SHA-256:')`, 'Binary preview includes the selected file digest');
+  assert.match(await evaluate(`document.querySelector('[data-testid="attachment-preview"]').textContent`), /full contents have not been decoded|full file has not been decoded/);
+  await click('[aria-label="Close attachment preview"]');
+  await click('[aria-label="Remove picked-binary.fixture attachment"]');
+  const scanPath = path.join(temporary, 'picked-scan.pdf'); await fs.writeFile(scanPath, scannedPdfFixture({ pages: 2 }));
+  dialog.showOpenDialog = async (_window, options) => { assert.equal(options.title, 'Scan PDF with OCR'); assert.deepEqual(options.filters, [{ name: 'PDF documents', extensions: ['pdf'] }]); return { canceled: false, filePaths: [scanPath] }; };
+  try {
+    await click('[data-testid="scan-pdf"]');
+    await waitFor(`!document.querySelector('[data-testid="scan-pdf"]').disabled`, 'The explicit local PDF scan completes', 65000);
+    const scanned = await evaluate(`!!document.querySelector('[aria-label="Preview picked-scan.pdf"]')`);
+    if (scanned) {
+      await click('[aria-label="Preview picked-scan.pdf"]');
+      await waitFor(`document.querySelector('[data-testid="attachment-preview-content"]')?.textContent.includes('OCR TEST 12345')`, 'The image-only PDF reaches the preview through Windows OCR');
+      assert.match(await evaluate(`document.querySelector('[data-testid="attachment-preview"]').textContent`), /OCR extracted text.*2 pages.*recognized with OCR/s);
+      assert.match(await evaluate(`document.querySelector('[data-testid="attachment-preview"]').textContent`), /Check names, numbers and tables/);
+      await fs.writeFile(path.join(output, 'gravity-pdf-ocr-preview.png'), (await win.webContents.capturePage()).toPNG());
+      await click('[aria-label="Close attachment preview"]');
+      await click('[aria-label="Remove picked-scan.pdf attachment"]');
+    } else {
+      assert.match(await evaluate(`document.querySelector('.composer-error')?.textContent || ''`), /Local PDF OCR requires Windows|No Windows OCR language/i, 'A machine without Windows OCR reports the actual missing prerequisite');
+      console.log('OCR prerequisite unavailable on this Windows runner; native scan reports the supported setup error.');
+      await click('[aria-label="Dismiss error"]');
+    }
+  } finally { dialog.showOpenDialog = originalDialog; }
   dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
   try {
     await click('[data-testid="attach-files"]');
@@ -282,6 +416,7 @@ try {
   await fs.writeFile(path.join(output, 'gravity-file-attachment.png'), (await win.webContents.capturePage()).toPNG());
   await click('.send-btn[aria-label="Send message"]');
   await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.some(c => !c.projectId && c.status === 'idle' && c.messages.some(m => m.files?.some(f => f.name === 'picked-note.md'))))`, 'Selected file sends as projectless read-only chat context');
+  await waitFor(`document.querySelector('.composer textarea')?.value === '' && !document.querySelector('[data-testid="picked-files"]') && window.desktop.invoke('draft:get',{key:'new:personal'}).then(d => !d)`, 'Accepted dispatch clears the submitted draft and attachments instead of restoring them');
   assert.ok(fixtureRequests.some(request => request.body?.messages?.some(message => typeof message.content === 'string' && message.content.includes('SMOKE_PICKED_NOTE')) && !request.body.tools?.length), 'Picked text reaches the model with no workspace tools');
   assert.ok(fixtureRequests.some(request => request.body?.messages?.some(message => typeof message.content === 'string' && ['SMOKE_DOCX_MARKER', 'Selected table cell', 'SMOKE_PDF_MARKER'].every(marker => message.content.includes(marker))) && !request.body.tools?.length), 'Document text and table cells reach Chat without workspace tools');
   const documentChat = (await invoke('state:get')).conversations.find(c => !c.projectId && c.messages.some(m => m.files?.some(file => file.name === 'picked-document.docx')));
@@ -393,7 +528,7 @@ try {
   await invoke('clipboard:write', { text: 'Gravity desktop smoke test passed' });
 
   // Exercise the actual renderer controls and IPC persistence in this disposable profile.
-  await click('button.conversation-link[title="Permission smoke conversation"]');
+  await clickConversation('Permission smoke conversation');
   const legacyProvider = await invoke('provider:save', { name: 'Claude web2api stopped fixture', type: 'openai', baseUrl: `http://127.0.0.1:${gatewayPort}/v1/chat/completions`, models: ['claude-3-5-sonnet'], defaultModel: 'claude-3-5-sonnet' });
   await invoke('conversation:update', { id: conversation.id, providerId: legacyProvider.id, model: legacyProvider.defaultModel });
   await invoke('conversation:send', { id: conversation.id, content: 'Exercise a stopped local bridge.' });
@@ -532,7 +667,7 @@ try {
   await waitFor(`window.desktop.invoke('state:get').then(s => s.conversations.find(c => c.id === ${JSON.stringify(shortcutConversation.id)})?.status === 'error')`, 'Legacy Claude bridge fails before shortcut recovery');
   const beforeShortcut = (await invoke('state:get')).conversations.find(c => c.id === shortcutConversation.id);
   await click('[aria-label="Close settings"]');
-  await click('button.conversation-link[title="Claude shortcut recovery"]');
+  await clickConversation('Claude shortcut recovery');
   await click('[data-testid="use-chrome-claude"]');
   await waitFor(`window.desktop.invoke('state:get').then(s => { const c = s.conversations.find(c => c.id === ${JSON.stringify(shortcutConversation.id)}); return c?.providerId === ${JSON.stringify(chromeProvider.id)} && c.model === 'claude-web' && c.status === 'idle'; })`, 'Use Claude in Chrome selects the browser route and clears the old failure');
   const afterShortcut = (await invoke('state:get')).conversations.find(c => c.id === shortcutConversation.id);
@@ -592,10 +727,116 @@ try {
   await click('[data-testid="browser-stop"]');
   assert.equal((await invoke('provider:test', { id: chromeProvider.id, model: 'claude-web' })).ok, false, 'A stopped connector cannot pass a model test');
   assert.doesNotMatch(await fs.readFile(path.join(websiteFixtureData, 'requests.log'), 'utf8'), /POST/, 'The in-app website fixture received health/model checks only');
-  console.log('PASS: native rendering/IPC, default tool-free Chat, saved-line context chips and zero-tool requests, actual request timing, website image preflight and safe diagnostics, agent proposal/apply/per-file review/Undo, passive project guide, one-click website setup and automatic startup, encrypted credentials, actual timestamped response tests, provider switching with history preserved, Claude recovery, permission controls, adapter UI, extension pairing, six website statuses and revocation.');
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--draft-recovery-fixture'], { cwd: path.resolve('.'), windowsHide: true, stdio: 'inherit', env: { ...process.env } });
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Corrupt-draft native fixture exceeded its startup deadline.')); }, 60000);
+    child.once('error', error => { clearTimeout(deadline); reject(error); });
+    child.once('exit', code => { clearTimeout(deadline); code === 0 ? resolve() : reject(new Error(`Corrupt-draft native fixture failed (${code}).`)); });
+  });
+  console.log('PASS: native rendering/IPC, Connections and Share models overview, explicit update checks and signing controls, isolated encrypted drafts with reload/reselection and corrupt-file recovery, literal attachment and binary previews, explicit local OCR or prerequisite error, default tool-free Chat, saved-line context chips and zero-tool requests, actual request timing, website image preflight and safe diagnostics, agent proposal/apply/per-file review/Undo, passive project guide, one-click website setup and automatic startup, encrypted credentials, actual timestamped response tests, provider switching with history preserved, Claude recovery, permission controls, adapter UI, extension pairing, six website statuses and revocation.');
   console.log(`Screenshots: ${path.join(output, 'gravity-chat-context.png')}, ${path.join(output, 'gravity-file-review.png')}, ${path.join(output, 'gravity-project-guide.png')}, ${path.join(output, 'gravity-prepared-command.png')}, ${path.join(output, 'gravity-web2api-one-click.png')}, ${path.join(output, 'desktop-smoke.png')}, ${path.join(output, 'permissions-menu.png')}, ${path.join(output, 'provider-connection.png')}, ${path.join(output, 'chat-connection.png')}, ${path.join(output, 'claude-recovery.png')}, ${path.join(output, 'web2api-bridges.png')}, ${path.join(output, 'browser-setup.png')}, ${path.join(output, 'browser-sites.png')}`);
   await cleanupWebsiteFixture();
-  mock.closeAllConnections(); mock.close(); app.quit();
+  mock.closeAllConnections(); mock.close();
+  const holdQuit = event => event.preventDefault(); app.on('before-quit', holdQuit);
+  const nativeMessageBox = dialog.showMessageBox, unexpectedCloseDialogs = [];
+  dialog.showMessageBox = async (_window, options) => { unexpectedCloseDialogs.push(options); return { response: 0 }; };
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('A successful native draft flush did not close the desktop.')), 10000);
+      win.once('closed', () => { clearTimeout(timer); resolve(); }); win.close();
+    });
+    assert.deepEqual(unexpectedCloseDialogs, [], 'A successful draft acknowledgement closes without a discard warning');
+    console.log('PASS: native successful draft flush closes the desktop without discarding unsaved data.');
+  } finally { dialog.showMessageBox = nativeMessageBox; app.removeListener('before-quit', holdQuit); }
+  app.quit();
 } catch (error) { console.error(error); await cleanupWebsiteFixture().catch(cleanupError => console.error(cleanupError)); mock.closeAllConnections(); mock.close(); app.exit(1); }
 }
-runSmoke().catch(error => { console.error(error); app.exit(1); });
+async function runDraftRecoverySmoke() {
+  const recoveryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gravity-draft-recovery-native-'));
+  assert.equal(path.dirname(path.resolve(recoveryRoot)), path.resolve(os.tmpdir()));
+  process.env.ANTIGRAVITY_DATA_DIR = path.join(recoveryRoot, 'settings');
+  process.env.ANTIGRAVITY_TEST_CONNECTOR_PORT = '0'; process.env.GRAVITY_TEST_GATEWAY_PORT = '0';
+  process.env.GRAVITY_TEST_WEB2API_ROOT = path.join(recoveryRoot, 'website-service');
+  for (const key of ['GRAVITY_DEV_URL', 'ANTIGRAVITY_DEV_URL', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'PORTABLE_EXECUTABLE_DIR', 'PORTABLE_EXECUTABLE_FILE']) delete process.env[key];
+  await fs.mkdir(process.env.ANTIGRAVITY_DATA_DIR, { recursive: true });
+  await fs.mkdir(process.env.GRAVITY_TEST_WEB2API_ROOT, { recursive: true });
+  const corruptDraft = '{"version":1,"encrypted":"SMOKE_CORRUPT_ORIGINAL_DO_NOT_OVERWRITE"';
+  const draftFile = path.join(process.env.ANTIGRAVITY_DATA_DIR, 'drafts.json');
+  await fs.writeFile(draftFile, corruptDraft);
+  let dropFlushAcknowledgement = false;
+  const flushAcknowledgements = [], originalIpcHandle = ipcMain.handle;
+  ipcMain.handle = function (channel, handler) {
+    return originalIpcHandle.call(this, channel, channel === 'desktop:invoke' ? async (event, method, args) => {
+      if (method === 'draft:flushed') {
+        flushAcknowledgements.push(args);
+        if (dropFlushAcknowledgement) return true;
+      }
+      return handler(event, method, args);
+    } : handler);
+  };
+  await import('../electron/main.mjs'); await app.whenReady();
+  let win;
+  for (let attempt = 0; attempt < 300; attempt++) {
+    win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.webContents.isLoadingMainFrame() && await win.webContents.executeJavaScript(`!!window.desktop && !!document.querySelector('.composer textarea') && !document.querySelector('.composer textarea').disabled`).catch(() => false)) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(win, 'Corrupt-draft startup still creates a usable desktop');
+  ipcMain.handle = originalIpcHandle;
+  const invoke = (method, args = {}) => win.webContents.executeJavaScript(`window.desktop.invoke(${JSON.stringify(method)},${JSON.stringify(args)})`);
+  const evaluate = script => win.webContents.executeJavaScript(script);
+  const waitFor = async script => { for (let attempt = 0; attempt < 200; attempt++) { if (await evaluate(script)) return; await new Promise(resolve => setTimeout(resolve, 50)); } assert.fail('Corrupt-draft recovery UI becomes ready'); };
+  assert.equal((await invoke('state:get')).draftRecovery.status, 'error');
+  await assert.rejects(invoke('draft:save', { key: 'new:personal', value: { prompt: 'Do not replace the unreadable original.' } }), /Saved drafts could not be opened/);
+  await evaluate(`document.querySelector('.sidebar-bottom .sidebar-nav').click()`);
+  await waitFor(`!!document.querySelector('[data-testid="settings-general-tab"]')`);
+  await evaluate(`document.querySelector('[data-testid="settings-general-tab"]').click()`);
+  await waitFor(`document.querySelector('[data-testid="draft-recovery"]')?.textContent.includes('original draft file is preserved')`);
+  await invoke('settings:save', { theme: 'dark' });
+  assert.equal((await invoke('state:get')).settings.theme, 'dark', 'Unrelated settings remain writable when drafts are unreadable');
+  assert.equal(await fs.readFile(draftFile, 'utf8'), corruptDraft, 'Recovery preserves the exact corrupt drafts file');
+  await evaluate(`document.querySelector('[aria-label="Close settings"]').click()`);
+  await evaluate(`(() => { const field=document.querySelector('.composer textarea'); Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field),'value').set.call(field,'Session draft survives a failed save.'); field.dispatchEvent(new Event('input',{bubbles:true})); field.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+  await waitFor(`document.querySelector('[data-testid="draft-warning"]')?.textContent.includes('draft is kept in this session')`);
+  assert.equal(await evaluate(`document.querySelector('.composer textarea').value`), 'Session draft survives a failed save.');
+  assert.equal(await fs.readFile(draftFile, 'utf8'), corruptDraft);
+  await assert.rejects(invoke('draft:flushed', { ok: 'true', requestId: 'fixture-invalid' }), /Invalid draft save acknowledgement/);
+  flushAcknowledgements.length = 0;
+  const closeDialogs = [], nativeMessageBox = dialog.showMessageBox;
+  let discard = false;
+  dialog.showMessageBox = async (_window, options) => {
+    assert.equal(options.title, 'Drafts could not be saved'); assert.equal(options.type, 'warning');
+    assert.deepEqual(options.buttons, ['Keep editing', 'Discard unsaved drafts']);
+    assert.equal(options.defaultId, 0); assert.equal(options.cancelId, 0);
+    closeDialogs.push(options); return { response: discard ? 1 : 0 };
+  };
+  const waitNative = async (predicate, message) => { for (let attempt = 0; attempt < 200; attempt++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 25)); } assert.fail(message); };
+  try {
+    win.close();
+    await waitNative(() => closeDialogs.length === 1 && flushAcknowledgements.length === 1, 'Failed native draft flush asks whether to keep editing');
+    assert.equal(flushAcknowledgements[0].ok, false, 'Renderer sends an explicit failed-save acknowledgement');
+    assert.equal(win.isDestroyed(), false, 'Keep editing refuses native window close after a failed draft save');
+    assert.equal(await evaluate(`document.querySelector('.composer textarea').value`), 'Session draft survives a failed save.');
+    const nativeTimeout = globalThis.setTimeout;
+    // In this child fixture only, accelerate the close deadline while dropping
+    // its actual renderer acknowledgement. Production keeps its full deadline.
+    globalThis.setTimeout = (callback, delay, ...args) => nativeTimeout(callback, delay === 10000 ? 75 : delay, ...args);
+    dropFlushAcknowledgement = true;
+    try {
+      win.close();
+      await waitNative(() => closeDialogs.length === 2, 'Missing acknowledgement reaches the native close deadline');
+      assert.equal(win.isDestroyed(), false, 'The timeout also defaults to keeping the window and unsaved draft open');
+    } finally { globalThis.setTimeout = nativeTimeout; dropFlushAcknowledgement = false; }
+    assert.equal(await fs.readFile(draftFile, 'utf8'), corruptDraft);
+    const holdQuit = event => event.preventDefault(); app.on('before-quit', holdQuit);
+    try {
+      discard = true;
+      await new Promise(resolve => { win.once('closed', resolve); win.close(); });
+      assert.equal(closeDialogs.length, 3, 'A later close offers a fresh explicit discard decision');
+      assert.equal(await fs.readFile(draftFile, 'utf8'), corruptDraft, 'Discarding the session still preserves the original unreadable file');
+    } finally { app.removeListener('before-quit', holdQuit); }
+    console.log('PASS: native corrupt-draft recovery preserves the original, keeps editing after failed saves/timeouts and closes only after explicit discard.');
+  } finally { dialog.showMessageBox = nativeMessageBox; }
+  app.quit();
+}
+(process.argv.includes('--draft-recovery-fixture') ? runDraftRecoverySmoke() : runSmoke()).catch(error => { console.error(error); app.exit(1); });

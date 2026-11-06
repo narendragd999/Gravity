@@ -10,7 +10,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FOLDERS = ('src', 'electron', 'browser-extension', 'bridges', 'tests', 'docs', 'scripts', 'build')
+FOLDERS = ('src', 'electron', 'browser-extension', 'bridges', 'tests', 'docs', 'scripts', 'build', '.github')
 FILES = (
     '.gitignore', 'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
     'tsconfig.json', 'vite.config.ts', 'index.html',
@@ -21,7 +21,7 @@ EXCLUDED_NAMES = {
     '__pycache__', '.git', '.data', '.downloads', '.venv', 'venv',
     'node_modules', 'release', 'dist', 'artifacts',
     'cookie.txt', 'cookies.txt', 'cookies.json', 'state.json',
-    'bridge-runtime.json', 'credentials.json', 'auth.json', 'config.json',
+    'bridge-runtime.json', 'credentials.json', 'auth.json', 'config.json', 'drafts.json',
 }
 EXCLUDED_SUFFIXES = {'.log', '.pyc', '.pyo', '.pem', '.key', '.p12', '.pfx'}
 PREFIX = 'Gravity/'

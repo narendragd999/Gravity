@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { normalizePermissionMode, validatePermissionTransition, permissionDescription } from './permissions.mjs';
 import { ENV_MASK, normalizeBridgeProfile, normalizeBridgeEnv, validateBridgeUrls } from './bridge-profiles.mjs';
 import { providerCapabilities } from './provider-capabilities.mjs';
@@ -8,7 +8,7 @@ import { providerCapabilities } from './provider-capabilities.mjs';
 const defaults = () => ({
   version: 1, projects: [], conversations: [], bridgeProfiles: [],
   providers: [
-    { id: 'google-gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'], defaultModel: 'gemini-2.5-flash' },
+    { id: 'google-gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', models: [], defaultModel: '' },
     { id: 'openai', name: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini'], defaultModel: 'gpt-4o-mini' },
     { id: 'gemini-local', name: 'Gemini Web2API', type: 'openai', baseUrl: 'http://127.0.0.1:8081/v1', models: ['gemini-3.6-flash'], defaultModel: 'gemini-3.6-flash' },
     { id: 'ollama', name: 'Ollama', type: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: [], defaultModel: '' }
@@ -65,20 +65,30 @@ export class Store {
   }
   saveBrowserPairing(pairing) {
     this.validateBrowserPairing(pairing);
+    const current = this.browserPairing();
+    // Keep the ciphertext stable when the trusted identity has not changed.
+    // Re-encrypting with a fresh IV would otherwise invalidate in-flight checks.
+    if (current?.extensionId === pairing.extensionId && current.token === pairing.token) return;
+    this.persistBrowserPairing(this.encrypt(JSON.stringify(pairing)));
+  }
+  clearBrowserPairing() { this.persistBrowserPairing(undefined); }
+  persistBrowserPairing(encryptedPairing) {
     const previous = this.data.encryptedBrowserPairing;
-    this.data.encryptedBrowserPairing = this.encrypt(JSON.stringify(pairing));
+    const providers = this.data.providers;
+    if (encryptedPairing === undefined) delete this.data.encryptedBrowserPairing;
+    else this.data.encryptedBrowserPairing = encryptedPairing;
+    this.data.providers = providers.map(provider => {
+      if (provider.managedBy !== 'browser-connector') return provider;
+      const { lastTest, responseChecks, ...fields } = provider;
+      return fields;
+    });
     try { this.save(); }
     catch (error) {
       if (previous === undefined) delete this.data.encryptedBrowserPairing;
       else this.data.encryptedBrowserPairing = previous;
+      this.data.providers = providers;
       throw error;
     }
-  }
-  clearBrowserPairing() {
-    const previous = this.data.encryptedBrowserPairing;
-    delete this.data.encryptedBrowserPairing;
-    try { this.save(); }
-    catch (error) { if (previous !== undefined) this.data.encryptedBrowserPairing = previous; throw error; }
   }
   provider(id) {
     const p = this.data.providers.find(x => x.id === id);
@@ -98,7 +108,6 @@ export class Store {
       if (!['browser-connector', 'web2api'].includes(input.managedBy)) throw new Error('Unsupported managed connection.');
       p.managedBy = input.managedBy;
     }
-    if (current && (current.type !== p.type || current.baseUrl !== p.baseUrl || input.apiKey !== undefined || input.headers !== undefined)) delete p.lastTest;
     if (p.defaultModel && !p.models.includes(p.defaultModel)) p.models.push(p.defaultModel);
     if (input.apiKey !== undefined) p.encryptedApiKey = input.apiKey ? this.encrypt(input.apiKey) : undefined;
     if (input.headers !== undefined) {
@@ -112,11 +121,45 @@ export class Store {
       }
       p.encryptedHeaders = Object.keys(headers).length ? this.encrypt(JSON.stringify(headers)) : undefined;
     }
+    if (current) {
+      const oldProvider = this.provider(current.id);
+      const sortedHeaders = headers => JSON.stringify(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)));
+      const newHeaders = p.encryptedHeaders ? this.decryptJSON(p.encryptedHeaders) : {};
+      const newKey = p.encryptedApiKey ? this.decrypt(p.encryptedApiKey) : '';
+      if (current.type !== p.type || current.baseUrl !== p.baseUrl || oldProvider.apiKey !== newKey || sortedHeaders(oldProvider.headers) !== sortedHeaders(newHeaders)) {
+        delete p.lastTest; delete p.responseChecks;
+      }
+    }
     for (const profile of this.data.bridgeProfiles.filter(profile => profile.providerId === p.id)) validateBridgeUrls(profile, p);
     if (current) this.data.providers[this.data.providers.indexOf(current)] = p;
     else this.data.providers.push(p);
     this.save();
     return this.publicState().providers.find(x => x.id === p.id);
+  }
+  providerConnectionStamp(id) {
+    const provider = this.data.providers.find(item => item.id === id);
+    if (!provider) return undefined;
+    const connection = [provider.type, provider.baseUrl, provider.encryptedApiKey, provider.encryptedHeaders];
+    if (provider.managedBy === 'browser-connector') connection.push(this.data.encryptedBrowserPairing);
+    return createHash('sha256').update(JSON.stringify(connection)).digest('hex');
+  }
+  recordProviderTest(id, result, { model, checkedAt = new Date().toISOString(), durationMs = 0, connectionStamp } = {}) {
+    const provider = this.data.providers.find(item => item.id === id);
+    if (!provider || connectionStamp && this.providerConnectionStamp(id) !== connectionStamp) return false;
+    const selectedModel = typeof model === 'string' && model.trim() || provider.defaultModel;
+    if (typeof result?.ok !== 'boolean' || typeof selectedModel !== 'string' || !selectedModel || selectedModel.length > 500
+      || !Number.isFinite(Date.parse(checkedAt)) || !Number.isFinite(durationMs) || durationMs < 0) throw new Error('Invalid response check.');
+    const previous = provider.responseChecks?.find(check => check.model === selectedModel);
+    const check = { ok: result.ok, model: selectedModel, checkedAt: new Date(checkedAt).toISOString(), durationMs: Math.round(durationMs),
+      ...(typeof result.message === 'string' ? { message: result.message.slice(0, 1800) } : {}),
+      ...(typeof result.code === 'string' ? { code: result.code.slice(0, 200) } : {}),
+      ...(result.ok ? { lastSuccessAt: checkedAt } : previous?.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
+      ...(!result.ok ? { lastFailureAt: checkedAt } : previous?.lastFailureAt ? { lastFailureAt: previous.lastFailureAt } : {}) };
+    const oldChecks = provider.responseChecks, oldLast = provider.lastTest;
+    provider.responseChecks = [check, ...(oldChecks || []).filter(item => item.model !== selectedModel)].slice(0, 256);
+    provider.lastTest = check;
+    try { this.save(); } catch (error) { provider.responseChecks = oldChecks; provider.lastTest = oldLast; throw error; }
+    return structuredClone(check);
   }
   bridgeProfile(id) {
     const profile = this.data.bridgeProfiles.find(item => item.id === id);

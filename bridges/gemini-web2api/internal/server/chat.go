@@ -133,19 +133,24 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 			_ = writeSSEDone(w)
 		} else {
 			a.Logf("Chat stream error: %v", emitErr)
+			_ = writeSSEEvent(w, "error", map[string]any{"error": map[string]any{"message": emitErr.Error(), "code": upstreamFailureCode(emitErr)}})
 		}
 		return
 	}
 
 	text, err := a.Gem.Generate(prompt, gemOpt, fileRefs)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": fmt.Sprintf("upstream error: %v", err)}})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": fmt.Sprintf("upstream error: %v", err), "code": upstreamFailureCode(err)}})
 		return
 	}
 
 	var toolCalls []models.OpenAIToolCall
 	if len(req.Tools) > 0 && text != "" && !isToolNone {
-		text, toolCalls = format.ParseToolCalls(text)
+		text, toolCalls, err = format.ParseToolCalls(text)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": map[string]any{"message": err.Error(), "code": "invalid_tool_call"}})
+			return
+		}
 	}
 
 	msg := models.OpenAIMessage{

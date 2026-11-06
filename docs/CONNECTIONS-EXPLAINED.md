@@ -10,13 +10,13 @@ For example, an OpenAI API provider uses that service's base URL and your OpenAI
 
 ## The local API lets another app use Gravity
 
-**Settings → API** provides an OpenAI-compatible server on this computer, normally **`http://127.0.0.1:4318/v1`**. Other apps send their requests there, and Gravity routes each request to its selected provider/model.
+**Settings → Share models** provides an OpenAI-compatible server on this computer, normally **`http://127.0.0.1:4318/v1`**. Other apps send their requests there, and Gravity routes each request to its selected provider/model.
 
 ```text
 Other app → Gravity local API/gateway → configured provider → model answer
 ```
 
-The key shown on the API page authenticates the other app to Gravity. It is a local access key and is separate from the upstream provider's key or website session. Copy the base URL, local key and an exact listed model ID from that page. Listed gateway IDs include the provider ID so routes remain distinct.
+The key shown on the Share models page authenticates the other app to Gravity. It is a local access key and is separate from the upstream provider's key or website session. Copy the base URL, local key and an exact listed model ID from that page. Listed gateway IDs include the provider ID so routes remain distinct.
 
 | Setting/address | What uses it |
 | --- | --- |
@@ -25,11 +25,11 @@ The key shown on the API page authenticates the other app to Gravity. It is a lo
 | Bundled website bridge, normally `http://127.0.0.1:4320/v1` | Gravity's managed website provider; setup fills its private local key |
 | Browser Connector transport, normally port `4319` | Gravity's Chrome extension communicates with the desktop; it is not an OpenAI client base URL |
 
-If you only chat inside Gravity, choose a working model connection in the chat. The API page is useful when you want another app to use those models. A listening local API and a discovered model list still need a working upstream account/service to produce a reply; use **Test response/Test model** to check actual generation.
+If you only chat inside Gravity, choose a working model connection in the chat. The Share models page is useful when you want another app to use those models. A listening local API and a discovered model list still need a working upstream account/service to produce a reply; use **Test response/Test model** to check actual generation.
 
 ## Why website setup opens another Chrome window
 
-**Get started → Connect & start** uses a separate browser profile saved for the selected website account. It keeps that website session separate from your usual Chrome browsing profile and avoids reading or modifying the browser's other accounts, tabs, history and drafts.
+**Connections → Separate saved website profile → Connect & start** uses a separate browser profile saved for the selected website account. It keeps that website session separate from your usual Chrome browsing profile and avoids reading or modifying the browser's other accounts, tabs, history and drafts.
 
 Sign in once in that separate window, open a new empty chat, and close its windows when setup asks. Gravity checks the saved profile and reuses it later. If the reopened verification browser shows a security check, keep it open while completing the check yourself. The extra window is part of the dedicated profile method; it does not mean Gravity needs the sandbox disabled.
 

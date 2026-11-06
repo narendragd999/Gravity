@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { complete } from './providers.mjs';
+import { complete, validateCompletion } from './providers.mjs';
 import { normalizePermissionMode, autoApproves, permissionDescription } from './permissions.mjs';
 import { providerCapabilities, cleanProviderError } from './provider-capabilities.mjs';
 
@@ -53,7 +53,7 @@ export class AgentRunner {
     run.promise = this.execute(c, provider, run).catch(error => {
       if (!controller.signal.aborted) {
         const message = cleanProviderError(error);
-        this.message(c, 'assistant', `Request failed: ${message}`); c.status = 'error';
+        this.message(c, 'assistant', `Request failed: ${message}`, { requestFailure: true }); c.status = 'error';
         c.failure = { message, code: error.code, status: error.status, at: new Date().toISOString(), retrySafe: false };
       }
       else { this.message(c, 'assistant', 'Stopped.'); c.status = 'idle'; }
@@ -94,7 +94,7 @@ export class AgentRunner {
   }
   history(c) {
     // Only completed exchanges enter provider context; review cards are display-only.
-    return c.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && !m.transient)).map(m => {
+    return c.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && !m.transient && !m.requestFailure)).map(m => {
       const content = this.messageContext(m);
       if (m.role === 'user' && m.images?.length) {
         const parts = [];
@@ -138,11 +138,9 @@ export class AgentRunner {
       const response = await this.complete(provider, { model: c.model, messages, tools, stream: true }, {
         signal, onDelta: text => { if (!c.request.receivedAt) { c.request.receivedAt = new Date().toISOString(); c.request.phase = 'Receiving response'; this.emit({ type: 'state' }); } reply.content += text; this.emit({ type: 'delta', conversationId: c.id, messageId: reply.id, text, content: reply.content }); }
       });
-      const result = response.choices?.[0]?.message;
-      if (!result) throw new Error('Provider returned no assistant message.');
+      const result = validateCompletion(response, provider).choices[0].message;
       reply.content = typeof result.content === 'string' ? result.content : reply.content;
       delete reply.transient;
-      if (!reply.content && !result.tool_calls?.length) reply.content = 'The provider returned an empty response.';
       if (!reply.content && result.tool_calls?.length) c.messages.splice(c.messages.indexOf(reply), 1);
       messages.push({ ...result, role: 'assistant' }); this.update();
       if (!result.tool_calls?.length) { c.apiHistory = structuredClone(messages.slice(1)); return; }
